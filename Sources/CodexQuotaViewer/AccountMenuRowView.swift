@@ -14,20 +14,17 @@ struct AccountMenuRowModel {
 
 @MainActor
 final class AccountMenuRowView: NSView {
-    static let minimumWidth: CGFloat = 372
-    static let height: CGFloat = 52
-    private static let cardInset: CGFloat = 3
+    static let minimumWidth: CGFloat = 400
+    static let height: CGFloat = 62
+    private static let cardInset: CGFloat = 5
     private static let horizontalPadding: CGFloat = 12
-    private static let quotaColumnWidth: CGFloat = 74
-    private static let quotaColumnSpacing: CGFloat = 8
+    private static let quotaGroupSpacing: CGFloat = 8
 
     private let cardView = NSView()
     private let indicatorView = AccountStatusDotView()
     private let nameField = NSTextField(labelWithString: "")
-    private let primaryRemainingField = NSTextField(labelWithString: "")
-    private let secondaryRemainingField = NSTextField(labelWithString: "")
-    private let primaryResetField = NSTextField(labelWithString: "")
-    private let secondaryResetField = NSTextField(labelWithString: "")
+    private let primaryQuotaView = AccountQuotaMetricView(accentColor: .systemIndigo)
+    private let secondaryQuotaView = AccountQuotaMetricView(accentColor: .systemGreen)
 
     private var trackingAreaRef: NSTrackingArea?
     private var isHovered = false {
@@ -104,13 +101,23 @@ final class AccountMenuRowView: NSView {
 
     func apply(model: AccountMenuRowModel) {
         self.model = model
-        nameField.stringValue = model.name
-        primaryRemainingField.stringValue = model.primaryRemainingText
-        secondaryRemainingField.stringValue = model.secondaryRemainingText
-        primaryResetField.stringValue = model.primaryResetText
-        secondaryResetField.stringValue = model.secondaryResetText
+        nameField.stringValue = menuDisplayName(from: model.name)
+        primaryQuotaView.apply(
+            AccountQuotaMetricModel(
+                remainingText: model.primaryRemainingText,
+                resetText: model.primaryResetText,
+                fallbackLabel: "5h"
+            )
+        )
+        secondaryQuotaView.apply(
+            AccountQuotaMetricModel(
+                remainingText: model.secondaryRemainingText,
+                resetText: model.secondaryResetText,
+                fallbackLabel: "7d"
+            )
+        )
         indicatorView.fillColor = model.indicatorColor
-        nameField.font = .systemFont(ofSize: 13, weight: .regular)
+        nameField.font = .systemFont(ofSize: 13, weight: .semibold)
         alphaValue = 1
         updateAppearance()
         window?.invalidateCursorRects(for: self)
@@ -123,7 +130,8 @@ final class AccountMenuRowView: NSView {
 
         cardView.translatesAutoresizingMaskIntoConstraints = false
         cardView.wantsLayer = true
-        cardView.layer?.cornerRadius = 10
+        cardView.layer?.cornerRadius = 15
+        cardView.layer?.cornerCurve = .continuous
         addSubview(cardView)
 
         indicatorView.translatesAutoresizingMaskIntoConstraints = false
@@ -135,17 +143,13 @@ final class AccountMenuRowView: NSView {
         nameField.textColor = .labelColor
         addSubview(nameField)
 
-        [primaryRemainingField, secondaryRemainingField, primaryResetField, secondaryResetField].forEach {
+        [primaryQuotaView, secondaryQuotaView].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
-            $0.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-            $0.textColor = .secondaryLabelColor
-            $0.alignment = .right
-            $0.maximumNumberOfLines = 1
             addSubview($0)
         }
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(greaterThanOrEqualToConstant: Self.minimumWidth),
+            widthAnchor.constraint(equalToConstant: Self.minimumWidth),
             heightAnchor.constraint(equalToConstant: Self.height),
 
             cardView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -154,61 +158,291 @@ final class AccountMenuRowView: NSView {
             cardView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Self.cardInset),
 
             indicatorView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.horizontalPadding),
-            indicatorView.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 12),
+            indicatorView.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
             indicatorView.widthAnchor.constraint(equalToConstant: 8),
             indicatorView.heightAnchor.constraint(equalToConstant: 8),
 
-            secondaryRemainingField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.horizontalPadding),
-            secondaryRemainingField.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 8),
-            secondaryRemainingField.widthAnchor.constraint(equalToConstant: Self.quotaColumnWidth),
+            secondaryQuotaView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.horizontalPadding),
+            secondaryQuotaView.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
 
-            primaryRemainingField.trailingAnchor.constraint(
-                equalTo: secondaryRemainingField.leadingAnchor,
-                constant: -Self.quotaColumnSpacing
+            primaryQuotaView.trailingAnchor.constraint(
+                equalTo: secondaryQuotaView.leadingAnchor,
+                constant: -Self.quotaGroupSpacing
             ),
-            primaryRemainingField.topAnchor.constraint(equalTo: secondaryRemainingField.topAnchor),
-            primaryRemainingField.widthAnchor.constraint(equalToConstant: Self.quotaColumnWidth),
+            primaryQuotaView.centerYAnchor.constraint(equalTo: secondaryQuotaView.centerYAnchor),
 
-            secondaryResetField.trailingAnchor.constraint(equalTo: secondaryRemainingField.trailingAnchor),
-            secondaryResetField.topAnchor.constraint(equalTo: secondaryRemainingField.bottomAnchor, constant: 4),
-            secondaryResetField.widthAnchor.constraint(equalTo: secondaryRemainingField.widthAnchor),
-
-            primaryResetField.trailingAnchor.constraint(equalTo: primaryRemainingField.trailingAnchor),
-            primaryResetField.topAnchor.constraint(equalTo: secondaryResetField.topAnchor),
-            primaryResetField.widthAnchor.constraint(equalTo: primaryRemainingField.widthAnchor),
-
-            nameField.leadingAnchor.constraint(equalTo: indicatorView.trailingAnchor, constant: 10),
-            nameField.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 7),
-            nameField.trailingAnchor.constraint(lessThanOrEqualTo: primaryRemainingField.leadingAnchor, constant: -12),
+            nameField.leadingAnchor.constraint(equalTo: indicatorView.trailingAnchor, constant: 8),
+            nameField.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
+            nameField.trailingAnchor.constraint(lessThanOrEqualTo: primaryQuotaView.leadingAnchor, constant: -10),
         ])
     }
 
     private func updateAppearance() {
-        let backgroundColor: NSColor
-        let borderColor: NSColor?
-        let borderWidth: CGFloat
+        var backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.36)
+        var borderColor = NSColor.separatorColor.withAlphaComponent(0.18)
+        let borderWidth: CGFloat = 1
+
+        if isHovered && model.isEnabled {
+            backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.54)
+            borderColor = NSColor.separatorColor.withAlphaComponent(0.28)
+        }
 
         if model.isCurrent {
             backgroundColor = isHovered && model.isEnabled
-                ? NSColor.separatorColor.withAlphaComponent(0.24)
-                : NSColor.separatorColor.withAlphaComponent(0.16)
-            borderColor = isHovered && model.isEnabled
-                ? NSColor.separatorColor.withAlphaComponent(0.35)
-                : nil
-            borderWidth = borderColor == nil ? 0 : 1
-        } else if model.isEnabled && isHovered {
-            backgroundColor = NSColor.separatorColor.withAlphaComponent(0.08)
-            borderColor = NSColor.separatorColor.withAlphaComponent(0.18)
-            borderWidth = 1
-        } else {
-            backgroundColor = .clear
-            borderColor = nil
-            borderWidth = 0
+                ? NSColor.systemGreen.withAlphaComponent(0.16)
+                : NSColor.systemGreen.withAlphaComponent(0.11)
+            borderColor = NSColor.systemGreen.withAlphaComponent(0.28)
         }
 
         cardView.layer?.backgroundColor = backgroundColor.cgColor
-        cardView.layer?.borderColor = borderColor?.cgColor
+        cardView.layer?.borderColor = borderColor.cgColor
         cardView.layer?.borderWidth = borderWidth
+    }
+}
+
+private func menuDisplayName(from name: String) -> String {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let atIndex = trimmed.firstIndex(of: "@") else {
+        return trimmed
+    }
+
+    let localPart = trimmed[..<atIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+    return localPart.isEmpty ? trimmed : String(localPart)
+}
+
+private struct AccountQuotaMetricModel {
+    let labelText: String
+    let percentText: String
+    let resetValueText: String
+    let progressFraction: CGFloat?
+
+    init(remainingText: String, resetText: String, fallbackLabel: String) {
+        let remainingParts = Self.splitLabelAndValue(remainingText, fallbackLabel: fallbackLabel)
+        let resetParts = Self.splitLabelAndValue(resetText, fallbackLabel: remainingParts.label)
+        labelText = remainingParts.label
+        percentText = remainingParts.value
+        resetValueText = resetParts.value
+        progressFraction = Self.progressFraction(from: remainingParts.value)
+    }
+
+    private static func splitLabelAndValue(
+        _ text: String,
+        fallbackLabel: String
+    ) -> (label: String, value: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return (fallbackLabel, "-")
+        }
+
+        let parts = trimmed.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+        guard let first = parts.first else {
+            return (fallbackLabel, "-")
+        }
+
+        let label = String(first)
+        guard parts.count > 1 else {
+            return (label, "-")
+        }
+
+        let value = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (label, value.isEmpty ? "-" : value)
+    }
+
+    private static func progressFraction(from value: String) -> CGFloat? {
+        let numericText = value
+            .replacingOccurrences(of: "%", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let numericValue = Double(numericText) else {
+            return nil
+        }
+
+        return CGFloat(min(1, max(0, numericValue / 100)))
+    }
+}
+
+@MainActor
+private final class AccountQuotaMetricView: NSView {
+    private static let pillWidth: CGFloat = 26
+    private static let trackWidth: CGFloat = 28
+    private static let percentWidth: CGFloat = 30
+    private static let resetWidth: CGFloat = 34
+    private static let height: CGFloat = 24
+
+    private let accentColor: NSColor
+    private let pillView: AccountQuotaPillView
+    private let progressView: AccountQuotaProgressView
+    private let percentField = NSTextField(labelWithString: "")
+    private let resetField = NSTextField(labelWithString: "")
+
+    init(accentColor: NSColor) {
+        self.accentColor = accentColor
+        pillView = AccountQuotaPillView(accentColor: accentColor)
+        progressView = AccountQuotaProgressView(fillColor: accentColor)
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.intrinsicWidth, height: Self.height))
+        setupView()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: Self.intrinsicWidth, height: Self.height)
+    }
+
+    func apply(_ model: AccountQuotaMetricModel) {
+        pillView.text = model.labelText
+        progressView.progress = model.progressFraction ?? 0
+        progressView.isDimmed = model.progressFraction == nil
+        percentField.stringValue = model.percentText
+        resetField.stringValue = model.resetValueText
+    }
+
+    private func setupView() {
+        translatesAutoresizingMaskIntoConstraints = false
+
+        pillView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(pillView)
+
+        progressView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(progressView)
+
+        percentField.translatesAutoresizingMaskIntoConstraints = false
+        percentField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        percentField.textColor = .labelColor
+        percentField.alignment = .right
+        percentField.maximumNumberOfLines = 1
+        percentField.lineBreakMode = .byTruncatingTail
+        addSubview(percentField)
+
+        resetField.translatesAutoresizingMaskIntoConstraints = false
+        resetField.font = .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+        resetField.textColor = .tertiaryLabelColor
+        resetField.alignment = .left
+        resetField.maximumNumberOfLines = 1
+        resetField.lineBreakMode = .byTruncatingTail
+        addSubview(resetField)
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: Self.intrinsicWidth),
+            heightAnchor.constraint(equalToConstant: Self.height),
+
+            pillView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            pillView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            pillView.widthAnchor.constraint(equalToConstant: Self.pillWidth),
+            pillView.heightAnchor.constraint(equalToConstant: 20),
+
+            progressView.leadingAnchor.constraint(equalTo: pillView.trailingAnchor, constant: 4),
+            progressView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            progressView.widthAnchor.constraint(equalToConstant: Self.trackWidth),
+            progressView.heightAnchor.constraint(equalToConstant: 4),
+
+            percentField.leadingAnchor.constraint(equalTo: progressView.trailingAnchor, constant: 4),
+            percentField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            percentField.widthAnchor.constraint(equalToConstant: Self.percentWidth),
+
+            resetField.leadingAnchor.constraint(equalTo: percentField.trailingAnchor, constant: 3),
+            resetField.centerYAnchor.constraint(equalTo: centerYAnchor),
+            resetField.widthAnchor.constraint(equalToConstant: Self.resetWidth),
+        ])
+    }
+
+    private static var intrinsicWidth: CGFloat {
+        pillWidth + 4 + trackWidth + 4 + percentWidth + 3 + resetWidth
+    }
+}
+
+@MainActor
+private final class AccountQuotaPillView: NSView {
+    var text: String = "" {
+        didSet {
+            textField.stringValue = text
+        }
+    }
+
+    private let accentColor: NSColor
+    private let textField = NSTextField(labelWithString: "")
+
+    init(accentColor: NSColor) {
+        self.accentColor = accentColor
+        super.init(frame: .zero)
+        setupView()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func setupView() {
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = accentColor.withAlphaComponent(0.14).cgColor
+
+        textField.translatesAutoresizingMaskIntoConstraints = false
+        textField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        textField.textColor = accentColor
+        textField.alignment = .center
+        textField.maximumNumberOfLines = 1
+        addSubview(textField)
+
+        NSLayoutConstraint.activate([
+            textField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            textField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            textField.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+}
+
+private final class AccountQuotaProgressView: NSView {
+    var progress: CGFloat = 0 {
+        didSet {
+            needsDisplay = true
+        }
+    }
+
+    var isDimmed = false {
+        didSet {
+            needsDisplay = true
+        }
+    }
+
+    private let fillColor: NSColor
+
+    init(fillColor: NSColor) {
+        self.fillColor = fillColor
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        let trackBounds = bounds.insetBy(dx: 0, dy: (bounds.height - 4) / 2)
+        let trackPath = NSBezierPath(roundedRect: trackBounds, xRadius: 2, yRadius: 2)
+        NSColor.separatorColor.withAlphaComponent(0.4).setFill()
+        trackPath.fill()
+
+        guard !isDimmed, progress > 0 else {
+            return
+        }
+
+        let fillWidth = max(4, trackBounds.width * min(1, max(0, progress)))
+        let fillRect = NSRect(
+            x: trackBounds.minX,
+            y: trackBounds.minY,
+            width: fillWidth,
+            height: trackBounds.height
+        )
+        let fillPath = NSBezierPath(roundedRect: fillRect, xRadius: 2, yRadius: 2)
+        fillColor.setFill()
+        fillPath.fill()
     }
 }
 

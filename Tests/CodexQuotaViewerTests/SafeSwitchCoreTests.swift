@@ -522,7 +522,141 @@ func switchOrchestratorAppliesRuntimeSynchronizesRolloutsAndRequestsRepair() asy
         ).utf8String()
         #expect(mergedConfig.contains("personality = \"pragmatic\""))
         #expect(mergedConfig.contains("model_provider = \"openai\""))
-        #expect(result.restorePoint.files.contains { $0.originalPath.hasSuffix("/auth.json") })
+        let restorePoint = try #require(result.restorePoint)
+        #expect(restorePoint.files.contains { $0.originalPath.hasSuffix("/auth.json") })
+    }
+
+@MainActor
+@Test
+func switchOrchestratorDirectSwitchWithoutBackupSkipsRestorePoint() async throws {
+        let harness = try makeHarness()
+        try seedCurrentRuntime(in: harness, provider: "legacy")
+        let rolloutURL = try writeRollout(
+            under: harness.codexHomeURL.appendingPathComponent("sessions", isDirectory: true),
+            id: "direct-switch-session",
+            provider: "legacy"
+        )
+
+        let repairer = RepairerSpy()
+        let desktop = DesktopControllerSpy(isRunning: true)
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: repairer,
+            desktop: desktop
+        )
+
+        let result = try await orchestrator.perform(
+            targetProfile: makeSwitchTarget(),
+            backupStrategy: .directWithoutBackup
+        )
+
+        let backupRoot = harness.appSupportURL.appendingPathComponent("SwitchBackups", isDirectory: true)
+        #expect(result.restorePoint == nil)
+        #expect(FileManager.default.fileExists(atPath: backupRoot.path) == false)
+        #expect(result.updatedRolloutCount == 1)
+        #expect(repairer.invocationCount == 1)
+        #expect(desktop.closeInvocationCount == 1)
+        #expect(desktop.reopenInvocationCount == 1)
+        #expect(try readSessionMetaProvider(from: rolloutURL) == "openai")
+        #expect(
+            try Data(contentsOf: harness.codexHomeURL.appendingPathComponent("auth.json")).utf8String()
+                == "{\"auth_mode\":\"chatgpt\"}"
+        )
+    }
+
+@MainActor
+@Test
+func switchOrchestratorSynchronizesRemoteWhenEnabled() async throws {
+        let harness = try makeHarness()
+        try seedCurrentRuntime(in: harness, provider: "legacy")
+
+        let remote = RemoteSwitchSpy()
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: RepairerSpy(),
+            desktop: DesktopControllerSpy(isRunning: false),
+            remoteSwitchClient: remote
+        )
+        let target = makeSwitchTarget()
+        let settings = RemoteSwitchSettings(
+            enabled: true,
+            sshTarget: "codex-box",
+            codexHomePath: "~/.codex"
+        )
+
+        let result = try await orchestrator.perform(
+            targetProfile: target,
+            remoteSettings: settings
+        )
+
+        #expect(remote.performOperations.count == 1)
+        #expect(remote.performOperations[0].settings == settings)
+        #expect(remote.performOperations[0].targetProviderID == "openai")
+        #expect(remote.performOperations[0].authData == target.runtimeMaterial.authData)
+        let expectedRemoteTargetConfig = try #require(target.runtimeMaterial.configData)
+        #expect(remote.performOperations[0].targetConfigData == expectedRemoteTargetConfig)
+        #expect(
+            try remote.performOperations[0].targetConfigData.utf8String()
+                .contains("personality = \"pragmatic\"") == false
+        )
+        #expect(remote.rollbackCalls.isEmpty)
+        #expect(result.remoteResult?.sshTarget == "codex-box")
+    }
+
+@MainActor
+@Test
+func switchOrchestratorRollsBackLocalWhenRemoteSwitchFails() async throws {
+        let harness = try makeHarness()
+        try seedCurrentRuntime(in: harness, provider: "legacy")
+
+        let remote = RemoteSwitchSpy(error: NSError(domain: "RemoteSwitch", code: 1))
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: RepairerSpy(),
+            desktop: DesktopControllerSpy(isRunning: false),
+            remoteSwitchClient: remote
+        )
+
+        await #expect(throws: NSError.self) {
+            _ = try await orchestrator.perform(
+                targetProfile: makeSwitchTarget(),
+                remoteSettings: RemoteSwitchSettings(enabled: true, sshTarget: "codex-box")
+            )
+        }
+
+        #expect(remote.performOperations.count == 1)
+        #expect(remote.rollbackCalls.isEmpty)
+        #expect(try Data(contentsOf: harness.codexHomeURL.appendingPathComponent("auth.json")).utf8String()
+            == "{\"auth_mode\":\"chatgpt\",\"last_refresh\":\"2026-03-31T00:00:00Z\"}")
+    }
+
+@MainActor
+@Test
+func switchOrchestratorRollsBackRemoteWhenLocalRepairFailsAfterRemoteSwitch() async throws {
+        let harness = try makeHarness()
+        try seedCurrentRuntime(in: harness, provider: "legacy")
+
+        let remote = RemoteSwitchSpy()
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: RepairerSpy(error: NSError(domain: "SafeSwitchCoreTests", code: 123)),
+            desktop: DesktopControllerSpy(isRunning: false),
+            remoteSwitchClient: remote
+        )
+
+        await #expect(throws: NSError.self) {
+            _ = try await orchestrator.perform(
+                targetProfile: makeSwitchTarget(),
+                remoteSettings: RemoteSwitchSettings(enabled: true, sshTarget: "codex-box")
+            )
+        }
+
+        #expect(remote.performOperations.count == 1)
+        #expect(remote.rollbackCalls.count == 1)
+        #expect(remote.rollbackCalls[0].settings.trimmedSSHTarget == "codex-box")
+        #expect(remote.rollbackCalls[0].restorePointID == remote.performOperations[0].restorePointID)
+        #expect(try Data(contentsOf: harness.codexHomeURL.appendingPathComponent("auth.json")).utf8String()
+            == "{\"auth_mode\":\"chatgpt\",\"last_refresh\":\"2026-03-31T00:00:00Z\"}")
     }
 
 @MainActor
@@ -570,6 +704,40 @@ func switchOrchestratorAutomaticallyRollsBackWhenRepairFailsAfterFilesChange() a
         #expect(try Data(contentsOf: harness.codexHomeURL.appendingPathComponent("auth.json")).utf8String()
             == "{\"auth_mode\":\"chatgpt\",\"last_refresh\":\"2026-03-31T00:00:00Z\"}")
         #expect(try readSessionMetaProvider(from: rolloutURL) == "legacy")
+        #expect(desktop.reopenInvocationCount == 1)
+    }
+
+@MainActor
+@Test
+func switchOrchestratorDirectSwitchWithoutBackupDoesNotRollbackAfterFilesChange() async throws {
+        let harness = try makeHarness()
+        try seedCurrentRuntime(in: harness, provider: "legacy")
+        let rolloutURL = try writeRollout(
+            under: harness.codexHomeURL.appendingPathComponent("sessions", isDirectory: true),
+            id: "direct-switch-no-rollback",
+            provider: "legacy"
+        )
+
+        let repairer = RepairerSpy(error: NSError(domain: "SafeSwitchCoreTests", code: 199))
+        let desktop = DesktopControllerSpy(isRunning: true)
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: repairer,
+            desktop: desktop
+        )
+
+        await #expect(throws: NSError.self) {
+            _ = try await orchestrator.perform(
+                targetProfile: makeSwitchTarget(),
+                backupStrategy: .directWithoutBackup
+            )
+        }
+
+        let backupRoot = harness.appSupportURL.appendingPathComponent("SwitchBackups", isDirectory: true)
+        #expect(FileManager.default.fileExists(atPath: backupRoot.path) == false)
+        #expect(try Data(contentsOf: harness.codexHomeURL.appendingPathComponent("auth.json")).utf8String()
+            == "{\"auth_mode\":\"chatgpt\"}")
+        #expect(try readSessionMetaProvider(from: rolloutURL) == "openai")
         #expect(desktop.reopenInvocationCount == 1)
     }
 
@@ -628,7 +796,8 @@ func switchOrchestratorRecomputesRolloutPreviewAfterClosingCodex() async throws 
         #expect(result.updatedRolloutCount == 2)
         #expect(try readSessionMetaProvider(from: originalRolloutURL) == "openai")
         #expect(try readSessionMetaProvider(from: lateRolloutURL) == "openai")
-        #expect(result.restorePoint.files.contains { $0.originalPath == lateRolloutURL.path })
+        let restorePoint = try #require(result.restorePoint)
+        #expect(restorePoint.files.contains { $0.originalPath == lateRolloutURL.path })
     }
 
 @MainActor
@@ -777,7 +946,8 @@ private func makeOrchestrator(
     harness: TestHarness,
     repairer: RepairerSpy,
     desktop: DesktopControllerSpy,
-    invalidator: ChannelInvalidatorSpy = ChannelInvalidatorSpy()
+    invalidator: ChannelInvalidatorSpy = ChannelInvalidatorSpy(),
+    remoteSwitchClient: RemoteSwitching = RemoteSwitchSpy()
 ) -> SwitchOrchestrator {
     let store = ProfileStore(
         baseURL: harness.appSupportURL,
@@ -793,7 +963,29 @@ private func makeOrchestrator(
         rolloutSynchronizer: RolloutProviderSynchronizer(),
         repairClient: repairer,
         desktopController: desktop,
-        quotaChannelInvalidator: invalidator
+        quotaChannelInvalidator: invalidator,
+        remoteSwitchClient: remoteSwitchClient
+    )
+}
+
+private func makeSwitchTarget() -> ProviderProfile {
+    ProviderProfile(
+        id: "target-openai",
+        displayName: "Target OpenAI",
+        source: .vault,
+        runtimeMaterial: ProfileRuntimeMaterial(
+            authData: Data("{\"auth_mode\":\"chatgpt\"}".utf8),
+            configData: Data("model_provider = \"openai\"\nmodel = \"gpt-5.4\"\n".utf8)
+        ),
+        authMode: .chatgpt,
+        providerID: "openai",
+        providerDisplayName: "OpenAI",
+        baseURLHost: nil,
+        model: "gpt-5.4",
+        snapshot: nil,
+        healthStatus: .healthy,
+        errorMessage: nil,
+        isCurrent: false
     )
 }
 
@@ -879,6 +1071,38 @@ private final class RepairerSpy: OfficialThreadRepairing {
             removedBrokenThreads: 0,
             hiddenSnapshotOnlySessions: 0
         )
+    }
+}
+
+private final class RemoteSwitchSpy: RemoteSwitching, @unchecked Sendable {
+    struct RollbackCall: Equatable {
+        let settings: RemoteSwitchSettings
+        let restorePointID: String
+    }
+
+    private(set) var performOperations: [RemoteSwitchOperation] = []
+    private(set) var rollbackCalls: [RollbackCall] = []
+    private let error: Error?
+
+    init(error: Error? = nil) {
+        self.error = error
+    }
+
+    func perform(_ operation: RemoteSwitchOperation) async throws -> RemoteSwitchResult {
+        performOperations.append(operation)
+        if let error {
+            throw error
+        }
+        return RemoteSwitchResult(
+            sshTarget: operation.settings.trimmedSSHTarget,
+            codexHomePath: operation.settings.effectiveCodexHomePath,
+            updatedRolloutCount: 2,
+            warningCount: 0
+        )
+    }
+
+    func rollback(settings: RemoteSwitchSettings, restorePointID: String) async throws {
+        rollbackCalls.append(RollbackCall(settings: settings, restorePointID: restorePointID))
     }
 }
 

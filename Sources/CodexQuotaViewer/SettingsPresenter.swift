@@ -5,6 +5,7 @@ import Foundation
 struct SettingsPresenterCallbacks {
     let onSettingsChanged: (AppSettings) -> Void
     let onAddChatGPTAccount: () -> Void
+    let onCancelChatGPTLogin: () -> Void
     let onAddAPIAccount: () -> Void
     let onActivateAccount: (String) -> Void
     let onRenameAccount: (String) -> Void
@@ -77,6 +78,7 @@ final class SettingsPresenter {
     ) {
         controller.onSettingsChanged = callbacks.onSettingsChanged
         controller.onAddChatGPTAccount = callbacks.onAddChatGPTAccount
+        controller.onCancelChatGPTLogin = callbacks.onCancelChatGPTLogin
         controller.onAddAPIAccount = callbacks.onAddAPIAccount
         controller.onActivateAccount = callbacks.onActivateAccount
         controller.onRenameAccount = callbacks.onRenameAccount

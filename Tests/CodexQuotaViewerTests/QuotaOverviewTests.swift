@@ -1017,7 +1017,7 @@ func exhaustedAccountMenuTextShowsResetScheduleInsteadOfPercentages() {
         dateFormatter.setLocalizedDateFormatFromTemplate("MMM d")
 
         #expect(text.contains("5h \(timeFormatter.string(from: Date(timeIntervalSince1970: 1_800_000_360)))"))
-        #expect(text.contains("1w \(dateFormatter.string(from: Date(timeIntervalSince1970: 1_800_086_400)))"))
+        #expect(text.contains("7d \(dateFormatter.string(from: Date(timeIntervalSince1970: 1_800_086_400)))"))
         #expect(text.contains("5h 0%") == false)
     }
 }
@@ -1124,8 +1124,8 @@ func freeWeeklyOnlyAccountUsesWeeklyLabelsAndExhaustedSection() {
         #expect(state.sections.map { $0.title } == ["Quota Exhausted"])
         #expect(state.sections[0].profiles.map { $0.id } == ["free"])
         #expect(state.boardTiles.map { $0.profile.id } == ["free"])
-        #expect(state.boardTiles[0].primaryText == "1w 0%")
-        #expect(state.boardTiles[0].secondaryText.contains("1w "))
+        #expect(state.boardTiles[0].primaryText == "7d 0%")
+        #expect(state.boardTiles[0].secondaryText.contains("7d "))
 
         let text = allAccountsMenuText(
             for: free,
@@ -1133,7 +1133,7 @@ func freeWeeklyOnlyAccountUsesWeeklyLabelsAndExhaustedSection() {
             now: now
         )
         #expect(text.contains("5h") == false)
-        #expect(text.contains("1w") == true)
+        #expect(text.contains("7d") == true)
     }
 }
 
@@ -1167,7 +1167,7 @@ func freeWeeklyOnlyAccountWithQuotaRemainsAvailable() {
         #expect(quotaTileState(for: free, refreshIntervalPreset: .fiveMinutes, now: now) == .healthy)
         #expect(state.sections.map { $0.title } == ["Available Quota"])
         #expect(state.sections[0].profiles.map { $0.id } == ["free"])
-        #expect(state.boardTiles[0].primaryText == "1w 63%")
+        #expect(state.boardTiles[0].primaryText == "7d 63%")
         #expect(state.boardTiles[0].secondaryText.isEmpty)
 
         let text = allAccountsMenuText(
@@ -1175,6 +1175,6 @@ func freeWeeklyOnlyAccountWithQuotaRemainsAvailable() {
             refreshIntervalPreset: .fiveMinutes,
             now: now
         )
-        #expect(text == "ai.krisxu@gmail.com · 1w 63%")
+        #expect(text == "ai.krisxu@gmail.com · 7d 63%")
     }
 }

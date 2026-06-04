@@ -84,6 +84,19 @@ struct SettingsAccountPanelState: Equatable {
     let importStatusText: String
     let sections: [SettingsAccountSection]
     let actionsEnabled: Bool
+    let canCancelChatGPTLogin: Bool
+
+    init(
+        importStatusText: String,
+        sections: [SettingsAccountSection],
+        actionsEnabled: Bool,
+        canCancelChatGPTLogin: Bool = false
+    ) {
+        self.importStatusText = importStatusText
+        self.sections = sections
+        self.actionsEnabled = actionsEnabled
+        self.canCancelChatGPTLogin = canCancelChatGPTLogin
+    }
 }
 
 struct AllAccountsMenuItemPresentation: Equatable {

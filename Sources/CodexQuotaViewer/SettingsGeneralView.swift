@@ -7,6 +7,9 @@ final class SettingsGeneralView: NSView {
     let languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let launchAtLoginCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     let iconStylePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+
+    let titleLabel = NSTextField(labelWithString: "")
+    let subtitleLabel = NSTextField(labelWithString: "")
     let sectionTitleLabel = NSTextField(labelWithString: "")
     let refreshRowLabel = NSTextField(labelWithString: "")
     let languageRowLabel = NSTextField(labelWithString: "")
@@ -24,6 +27,11 @@ final class SettingsGeneralView: NSView {
     }
 
     func applyLocalizedText() {
+        titleLabel.stringValue = AppLocalization.localized(en: "General", zh: "通用")
+        subtitleLabel.stringValue = AppLocalization.localized(
+            en: "Configure app preferences and menu bar behavior.",
+            zh: "配置应用偏好与菜单栏显示方式。"
+        )
         sectionTitleLabel.stringValue = AppLocalization.localized(en: "General", zh: "通用")
         refreshRowLabel.stringValue = AppLocalization.localized(en: "Refresh interval", zh: "刷新频率")
         languageRowLabel.stringValue = AppLocalization.localized(en: "Language", zh: "语言")
@@ -32,46 +40,77 @@ final class SettingsGeneralView: NSView {
     }
 
     private func setupUI() {
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 16
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        translatesAutoresizingMaskIntoConstraints = false
 
+        titleLabel.identifier = NSUserInterfaceItemIdentifier("settings.general.title")
         sectionTitleLabel.identifier = NSUserInterfaceItemIdentifier("settings.general.section")
         refreshRowLabel.identifier = NSUserInterfaceItemIdentifier("settings.general.refresh")
         languageRowLabel.identifier = NSUserInterfaceItemIdentifier("settings.general.language")
         iconStyleRowLabel.identifier = NSUserInterfaceItemIdentifier("settings.general.icon-style")
+        launchAtLoginCheckbox.identifier = NSUserInterfaceItemIdentifier("settings.general.launch-at-login")
 
-        stack.addArrangedSubview(makeSectionTitleLabel(sectionTitleLabel))
-        stack.addArrangedSubview(makeRow(label: refreshRowLabel, control: refreshPopup))
-        stack.addArrangedSubview(makeRow(label: languageRowLabel, control: languagePopup))
-        stack.addArrangedSubview(makeRow(label: iconStyleRowLabel, control: iconStylePopup))
-        stack.addArrangedSubview(launchAtLoginCheckbox)
+        titleLabel.font = .systemFont(ofSize: 24, weight: .semibold)
+        titleLabel.textColor = .labelColor
+        titleLabel.setContentHuggingPriority(.required, for: .vertical)
+
+        subtitleLabel.font = .systemFont(ofSize: 14)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.maximumNumberOfLines = 0
+        subtitleLabel.lineBreakMode = .byWordWrapping
+
+        sectionTitleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        sectionTitleLabel.textColor = .labelColor
+
+        let card = SettingsCardView()
+        let cardStack = NSStackView()
+        cardStack.orientation = .vertical
+        cardStack.alignment = .leading
+        cardStack.spacing = 12
+        cardStack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(cardStack)
+
+        cardStack.addArrangedSubview(sectionTitleLabel)
+        cardStack.addArrangedSubview(makeRow(label: refreshRowLabel, control: refreshPopup))
+        cardStack.addArrangedSubview(makeRow(label: languageRowLabel, control: languagePopup))
+        cardStack.addArrangedSubview(makeRow(label: iconStyleRowLabel, control: iconStylePopup))
+        cardStack.addArrangedSubview(launchAtLoginCheckbox)
+
+        let pageStack = NSStackView(views: [titleLabel, subtitleLabel, card])
+        pageStack.orientation = .vertical
+        pageStack.alignment = .leading
+        pageStack.spacing = 12
+        pageStack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(pageStack)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 20),
+            pageStack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            pageStack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            pageStack.topAnchor.constraint(equalTo: topAnchor),
+            pageStack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
+
+            subtitleLabel.widthAnchor.constraint(equalTo: pageStack.widthAnchor),
+            card.widthAnchor.constraint(equalTo: pageStack.widthAnchor),
+
+            cardStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
+            cardStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
+            cardStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 18),
+            cardStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -18),
         ])
     }
 
-    private func makeSectionTitleLabel(_ label: NSTextField) -> NSTextField {
-        label.font = .systemFont(ofSize: 15, weight: .semibold)
-        label.textColor = .labelColor
-        return label
-    }
-
     private func makeRow(label: NSTextField, control: NSView) -> NSView {
-        label.alignment = .right
+        label.alignment = .left
+        label.font = .systemFont(ofSize: 13)
+        label.textColor = .labelColor
         label.setContentHuggingPriority(.required, for: .horizontal)
-        label.widthAnchor.constraint(equalToConstant: 112).isActive = true
+        label.widthAnchor.constraint(equalToConstant: 132).isActive = true
+        control.widthAnchor.constraint(greaterThanOrEqualToConstant: 260).isActive = true
 
         let row = NSStackView(views: [label, control])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 12
+        row.spacing = 16
+        row.translatesAutoresizingMaskIntoConstraints = false
         return row
     }
 }

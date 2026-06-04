@@ -16,6 +16,66 @@ func menuTrackingGateDefersRebuildUntilMenuCloses() {
 }
 
 @Test
+func appSettingsDecodesRemoteSwitchDefaultsForLegacySettings() throws {
+    let data = Data(
+        """
+        {
+          "refreshIntervalPreset": "manual",
+          "launchAtLoginEnabled": true,
+          "statusItemStyle": "text",
+          "appLanguage": "system"
+        }
+        """.utf8
+    )
+
+    let settings = try JSONDecoder().decode(AppSettings.self, from: data)
+
+    #expect(settings.remoteSwitch == RemoteSwitchSettings())
+    #expect(settings.remoteSwitch.shouldSyncRemote == false)
+}
+
+@Test
+func appSettingsDecodesLegacySingleRemoteSwitchTarget() throws {
+    let data = Data(
+        """
+        {
+          "remoteSwitch": {
+            "enabled": true,
+            "sshTarget": "codex-box",
+            "codexHomePath": "/srv/codex"
+          }
+        }
+        """.utf8
+    )
+
+    let settings = try JSONDecoder().decode(AppSettings.self, from: data)
+
+    #expect(settings.remoteSwitch.enabled)
+    #expect(settings.remoteSwitch.sshTargets == ["codex-box"])
+    #expect(settings.remoteSwitch.sshTarget == "codex-box")
+    #expect(settings.remoteSwitch.codexHomePath == "/srv/codex")
+}
+
+@Test
+func appSettingsRoundTripsRemoteSwitchSettings() throws {
+    let original = AppSettings(
+        remoteSwitch: RemoteSwitchSettings(
+            enabled: true,
+            sshTargets: ["codex-box", "prod-box"],
+            codexHomePath: "/srv/codex"
+        )
+    )
+
+    let data = try JSONEncoder().encode(original)
+    let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+
+    #expect(decoded.remoteSwitch.enabled)
+    #expect(decoded.remoteSwitch.sshTarget == "codex-box")
+    #expect(decoded.remoteSwitch.sshTargets == ["codex-box", "prod-box"])
+    #expect(decoded.remoteSwitch.codexHomePath == "/srv/codex")
+}
+
+@Test
 func deferredMenuPresentationQueueDrainsAfterMenuCloses() {
     var queue = DeferredMenuPresentationQueue()
     queue.enqueue(.settings)
@@ -24,6 +84,101 @@ func deferredMenuPresentationQueueDrainsAfterMenuCloses() {
     #expect(queue.actions == [.settings])
     #expect(queue.drain() == [.settings])
     #expect(queue.actions.isEmpty)
+}
+
+@Test
+func providerProfileCanPreferSavedDisplayNameOverSnapshotEmail() {
+    let runtime = makeTestRuntimeMaterial(id: "renamed", authMode: .chatgpt)
+    let snapshot = makeTestSnapshot(
+        email: "leafybruyneel780458@outlook.com",
+        primaryRemaining: 50,
+        secondaryRemaining: 60,
+        fetchedAt: Date(timeIntervalSince1970: 1_800_000_000)
+    )
+
+    let profile = buildProviderProfile(
+        id: "renamed",
+        fallbackDisplayName: "Leafy Main",
+        source: .vault,
+        runtimeMaterial: runtime,
+        snapshot: snapshot,
+        healthStatus: .healthy,
+        errorMessage: nil,
+        isCurrent: true,
+        displayNamePreference: .fallbackDisplayName
+    )
+
+    #expect(profile.displayName == "Leafy Main")
+}
+
+@MainActor
+@Test
+func settingsWindowControllerPersistsRemoteSwitchControls() throws {
+    let accountPanelState = SettingsAccountPanelState(
+        importStatusText: "",
+        sections: [],
+        actionsEnabled: true
+    )
+    let controller = SettingsWindowController(
+        settings: AppSettings(),
+        accountPanelState: accountPanelState,
+        sshConfigHostLoader: { ["codex-box", "prod-box"] }
+    )
+    var updatedSettings: AppSettings?
+    controller.onSettingsChanged = { settings in
+        updatedSettings = settings
+    }
+
+    let contentView = try #require(controller.window?.contentView)
+    let remoteSync = try #require(findView(in: contentView, identifier: "settings.remote.sync") as? NSSwitch)
+    let remoteTarget = try #require(findView(in: contentView, identifier: "settings.remote.target-field") as? RemoteTargetChipField)
+    let codexRow = try #require(findView(in: contentView, identifier: "settings.remote.host-row.codex-box") as? RemoteHostRowView)
+    let prodRow = try #require(findView(in: contentView, identifier: "settings.remote.host-row.prod-box") as? RemoteHostRowView)
+    let remotePath = try #require(findTextField(in: controller.window, identifier: "settings.remote.path-field"))
+    codexRow.performToggle()
+    prodRow.performToggle()
+    remoteTarget.setTargets(["manual-box"])
+    remotePath.stringValue = "/srv/codex"
+    remoteSync.state = .on
+    remoteSync.sendAction(remoteSync.action, to: remoteSync.target)
+
+    #expect(updatedSettings?.remoteSwitch.enabled == true)
+    #expect(updatedSettings?.remoteSwitch.sshTarget == "codex-box")
+    #expect(updatedSettings?.remoteSwitch.sshTargets == ["codex-box", "prod-box", "manual-box"])
+    #expect(updatedSettings?.remoteSwitch.codexHomePath == "/srv/codex")
+}
+
+@MainActor
+@Test
+func settingsWindowControllerFiltersRemoteHostsWithoutLosingSelection() throws {
+    let controller = SettingsWindowController(
+        settings: AppSettings(
+            remoteSwitch: RemoteSwitchSettings(
+                enabled: true,
+                sshTargets: ["codex-box", "prod-box"]
+            )
+        ),
+        accountPanelState: SettingsAccountPanelState(importStatusText: "", sections: [], actionsEnabled: true),
+        sshConfigHostLoader: { ["codex-box", "prod-box", "local"] }
+    )
+
+    let contentView = try #require(controller.window?.contentView)
+    let searchField = try #require(findTextField(in: controller.window, identifier: "settings.remote.search") as? NSSearchField)
+    let selectedCount = try #require(findView(in: contentView, identifier: "settings.remote.selected-count") as? NSTextField)
+
+    #expect(selectedCount.stringValue.contains("2"))
+
+    searchField.stringValue = "prod"
+    controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: searchField))
+    #expect(findView(in: contentView, identifier: "settings.remote.host-row.codex-box") == nil)
+    #expect(findView(in: contentView, identifier: "settings.remote.host-row.prod-box") != nil)
+    #expect(selectedCount.stringValue.contains("2"))
+
+    searchField.stringValue = ""
+    controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: searchField))
+    let codexRow = try #require(findView(in: contentView, identifier: "settings.remote.host-row.codex-box") as? RemoteHostRowView)
+    #expect(codexRow.isChecked)
+    #expect(selectedCount.stringValue.contains("2"))
 }
 
 @Test
@@ -363,7 +518,7 @@ func quotaOverviewMenuRowsUseCustomViewAndShowDualQuotaColumns() throws {
         let tile = QuotaTileViewModel(
             profile: current,
             primaryText: "5h 81%",
-            secondaryText: "1w 79%",
+            secondaryText: "7d 79%",
             state: .healthy
         )
         let items = buildQuotaOverviewMenuItems(
@@ -394,11 +549,15 @@ func quotaOverviewMenuRowsUseCustomViewAndShowDualQuotaColumns() throws {
         dateFormatter.locale = AppLocalization.locale
         dateFormatter.setLocalizedDateFormatFromTemplate("MMM d")
 
-        #expect(findLabel(in: rowView) { $0 == "current@example.com" } != nil)
-        #expect(findLabel(in: rowView) { $0 == "5h 81%" } != nil)
-        #expect(findLabel(in: rowView) { $0 == "1w 79%" } != nil)
-        #expect(findLabel(in: rowView) { $0 == "5h \(timeFormatter.string(from: Date(timeIntervalSince1970: 1_800_000_360)))" } != nil)
-        #expect(findLabel(in: rowView) { $0 == "1w \(dateFormatter.string(from: Date(timeIntervalSince1970: 1_800_086_400)))" } != nil)
+        #expect(rowView.intrinsicContentSize.width == 400)
+        #expect(findLabel(in: rowView) { $0 == "current" } != nil)
+        #expect(findLabel(in: rowView) { $0 == "current@example.com" } == nil)
+        #expect(findLabel(in: rowView) { $0 == "5h" } != nil)
+        #expect(findLabel(in: rowView) { $0 == "81%" } != nil)
+        #expect(findLabel(in: rowView) { $0 == "7d" } != nil)
+        #expect(findLabel(in: rowView) { $0 == "79%" } != nil)
+        #expect(findLabel(in: rowView) { $0 == timeFormatter.string(from: Date(timeIntervalSince1970: 1_800_000_360)) } != nil)
+        #expect(findLabel(in: rowView) { $0 == dateFormatter.string(from: Date(timeIntervalSince1970: 1_800_086_400)) } != nil)
         #expect((rowView.accessibilityLabel() ?? "").contains("Current account"))
         #expect(quotaOverviewEmptyStateMessage(for: state).contains("API accounts"))
     }
@@ -466,9 +625,11 @@ func quotaOverviewMenuRowsPadWeeklyOnlyAccountsWithFiveHourPlaceholder() throws 
         dateFormatter.locale = AppLocalization.locale
         dateFormatter.setLocalizedDateFormatFromTemplate("MMM d")
 
-        #expect(findLabel(in: rowView) { $0 == "5h -" } != nil)
-        #expect(findLabel(in: rowView) { $0 == "1w 63%" } != nil)
-        #expect(findLabel(in: rowView) { $0 == "1w \(dateFormatter.string(from: Date(timeIntervalSince1970: 1_800_086_400)))" } != nil)
+        #expect(findLabel(in: rowView) { $0 == "5h" } != nil)
+        #expect(findLabel(in: rowView) { $0 == "-" } != nil)
+        #expect(findLabel(in: rowView) { $0 == "7d" } != nil)
+        #expect(findLabel(in: rowView) { $0 == "63%" } != nil)
+        #expect(findLabel(in: rowView) { $0 == dateFormatter.string(from: Date(timeIntervalSince1970: 1_800_086_400)) } != nil)
     }
 }
 
@@ -478,7 +639,7 @@ func statusItemAccessibilityDescriptionExplainsMeterStateAndStaleness() {
         AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
 
         let description = statusItemAccessibilityDescription(
-            summary: "5h 81% 1w 79%",
+            summary: "5h 81% 7d 79%",
             style: .meter,
             isStale: true
         )
@@ -697,8 +858,8 @@ func quotaOverviewMenuItemsReuseExistingRowViewsWhenShapeMatches() throws {
         let updatedRowView = try #require(items.first?.view as? AccountMenuRowView)
         #expect(didReuse)
         #expect(updatedRowView === firstRowView)
-        #expect(findLabel(in: updatedRowView) { $0 == "5h 64%" } != nil)
-        #expect(findLabel(in: updatedRowView) { $0 == "1w 52%" } != nil)
+        #expect(findLabel(in: updatedRowView) { $0 == "64%" } != nil)
+        #expect(findLabel(in: updatedRowView) { $0 == "52%" } != nil)
     }
 }
 
@@ -750,6 +911,7 @@ func settingsWindowCoordinatorBuildsPanelStateBeforeForwardingToPresenter() {
         callbacks: SettingsPresenterCallbacks(
             onSettingsChanged: { _ in },
             onAddChatGPTAccount: {},
+            onCancelChatGPTLogin: {},
             onAddAPIAccount: {},
             onActivateAccount: { _ in },
             onRenameAccount: { _ in },
@@ -788,6 +950,7 @@ func settingsWindowCoordinatorRefreshesCallbacksOnRepeatedPresentation() {
         callbacks: SettingsPresenterCallbacks(
             onSettingsChanged: { _ in },
             onAddChatGPTAccount: {},
+            onCancelChatGPTLogin: {},
             onAddAPIAccount: { called.append("old") },
             onActivateAccount: { _ in },
             onRenameAccount: { _ in },
@@ -803,6 +966,7 @@ func settingsWindowCoordinatorRefreshesCallbacksOnRepeatedPresentation() {
         callbacks: SettingsPresenterCallbacks(
             onSettingsChanged: { _ in },
             onAddChatGPTAccount: {},
+            onCancelChatGPTLogin: {},
             onAddAPIAccount: { called.append("new") },
             onActivateAccount: { _ in },
             onRenameAccount: { _ in },
@@ -867,6 +1031,7 @@ func settingsPresenterShowRefreshesCallbacksOnRepeatedPresentation() throws {
         callbacks: SettingsPresenterCallbacks(
             onSettingsChanged: { _ in },
             onAddChatGPTAccount: {},
+            onCancelChatGPTLogin: {},
             onAddAPIAccount: { called.append("old") },
             onActivateAccount: { _ in },
             onRenameAccount: { _ in },
@@ -882,6 +1047,7 @@ func settingsPresenterShowRefreshesCallbacksOnRepeatedPresentation() throws {
         callbacks: SettingsPresenterCallbacks(
             onSettingsChanged: { _ in },
             onAddChatGPTAccount: {},
+            onCancelChatGPTLogin: {},
             onAddAPIAccount: { called.append("new") },
             onActivateAccount: { _ in },
             onRenameAccount: { _ in },
@@ -899,18 +1065,25 @@ func settingsPresenterShowRefreshesCallbacksOnRepeatedPresentation() throws {
 
 @MainActor
 @Test
-func settingsWindowControllerUsesDedicatedTabViews() throws {
+func settingsWindowControllerUsesSidebarPages() throws {
     let controller = SettingsWindowController(
         settings: AppSettings(),
         accountPanelState: SettingsAccountPanelState(importStatusText: "", sections: [], actionsEnabled: true)
     )
 
     let contentView = try #require(controller.window?.contentView)
-    let tabView = try #require(findView(ofType: NSTabView.self, in: contentView))
+    let sidebar = try #require(findView(in: contentView, identifier: "settings.sidebar"))
+    let remoteItem = try #require(findView(in: sidebar, identifier: "settings.sidebar.remote") as? SettingsSidebarItemView)
+    let remoteView = try #require(findView(ofType: SettingsRemoteView.self, in: contentView))
+    let generalView = try #require(findView(ofType: SettingsGeneralView.self, in: contentView))
+    let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
+    let advancedView = try #require(findView(ofType: SettingsAdvancedView.self, in: contentView))
 
-    #expect(tabView.tabViewItems.count == 2)
-    #expect(tabView.tabViewItems[0].view is SettingsGeneralView)
-    #expect(tabView.tabViewItems[1].view is SettingsAccountsView)
+    #expect(remoteItem.isSelectedItem)
+    #expect(remoteView.isHidden == false)
+    #expect(generalView.isHidden)
+    #expect(accountsView.isHidden)
+    #expect(advancedView.isHidden)
 }
 
 @MainActor
@@ -978,8 +1151,7 @@ func settingsWindowControllerExplainsWhyAccountActionsAreDisabled() throws {
         )
 
         let contentView = try #require(controller.window?.contentView)
-        let tabView = try #require(findView(ofType: NSTabView.self, in: contentView))
-        let accountsView = try #require(tabView.tabViewItems.last?.view)
+        let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
         let addChatGPTButton = try #require(findButton(in: accountsView, title: "Sign in with ChatGPT"))
         let addAPIButton = try #require(findButton(in: accountsView, title: "Add API Account"))
         let statusLabel = try #require(
@@ -991,6 +1163,109 @@ func settingsWindowControllerExplainsWhyAccountActionsAreDisabled() throws {
         #expect(statusLabel.stringValue.contains("Finish the current account operation before changing saved accounts."))
         #expect(addChatGPTButton.toolTip == "Finish the current account operation before changing saved accounts.")
         #expect(addAPIButton.toolTip == "Finish the current account operation before changing saved accounts.")
+    }
+}
+
+@MainActor
+@Test
+func settingsWindowControllerShowsCancelButtonForActiveChatGPTLogin() throws {
+    try withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let controller = SettingsWindowController(
+            settings: AppSettings(),
+            accountPanelState: SettingsAccountPanelState(
+                importStatusText: "Local vault: 3 saved accounts",
+                sections: [],
+                actionsEnabled: false,
+                canCancelChatGPTLogin: true
+            )
+        )
+        var didCancel = false
+        controller.onCancelChatGPTLogin = {
+            didCancel = true
+        }
+
+        let contentView = try #require(controller.window?.contentView)
+        let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
+        let cancelButton = try #require(findButton(in: accountsView, title: "Cancel Login"))
+
+        #expect(cancelButton.isHidden == false)
+        #expect(cancelButton.isEnabled == true)
+
+        cancelButton.performClick(nil)
+        #expect(didCancel == true)
+    }
+}
+
+@MainActor
+@Test
+func settingsWindowControllerKeepsAccountRowsVisibleAfterLoginCancelStateClears() throws {
+    try withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let normalState = SettingsAccountPanelState(
+            importStatusText: "Local vault: 2 saved accounts",
+            sections: [
+                SettingsAccountSection(
+                    title: "Current Account (1)",
+                    items: [
+                        SettingsAccountItem(
+                            id: "current",
+                            title: "current@example.com",
+                            subtitle: "ChatGPT · Stored in local vault",
+                            isCurrent: true,
+                            canActivate: false,
+                            canRename: true,
+                            canForget: false
+                        )
+                    ]
+                ),
+                SettingsAccountSection(
+                    title: "ChatGPT Accounts (1)",
+                    items: [
+                        SettingsAccountItem(
+                            id: "other",
+                            title: "other@example.com",
+                            subtitle: "ChatGPT · Stored in local vault",
+                            isCurrent: false,
+                            canActivate: true,
+                            canRename: true,
+                            canForget: true
+                        )
+                    ]
+                ),
+            ],
+            actionsEnabled: true
+        )
+        let controller = SettingsWindowController(
+            settings: AppSettings(),
+            accountPanelState: normalState
+        )
+        let contentView = try #require(controller.window?.contentView)
+        let accountsSidebarItem = try #require(findView(in: contentView, identifier: "settings.sidebar.accounts") as? NSControl)
+        accountsSidebarItem.sendAction(accountsSidebarItem.action, to: accountsSidebarItem.target)
+        let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
+        let scrollView = try #require(findView(in: accountsView, identifier: "settings.accounts.scroll") as? NSScrollView)
+        let tableView = try #require(findView(in: scrollView, identifier: "settings.accounts.table") as? NSTableView)
+
+        controller.update(
+            settings: AppSettings(),
+            accountPanelState: SettingsAccountPanelState(
+                importStatusText: normalState.importStatusText,
+                sections: normalState.sections,
+                actionsEnabled: false,
+                canCancelChatGPTLogin: true
+            )
+        )
+        controller.update(settings: AppSettings(), accountPanelState: normalState)
+        controller.window?.layoutIfNeeded()
+        accountsView.layoutSubtreeIfNeeded()
+
+        #expect(tableView.numberOfRows == 4)
+        #expect(tableView.frame.height > 0)
+        #expect(tableView.view(atColumn: 0, row: 1, makeIfNecessary: true) != nil)
+        #expect(tableView.view(atColumn: 0, row: 3, makeIfNecessary: true) != nil)
+        #expect(findLabel(in: tableView) { $0 == "current@example.com" } != nil)
+        #expect(findLabel(in: tableView) { $0 == "other@example.com" } != nil)
     }
 }
 
@@ -1045,8 +1320,7 @@ func settingsWindowControllerSeparatesAccountsHeaderFromScrollableList() throws 
     )
 
     let contentView = try #require(controller.window?.contentView)
-    let tabView = try #require(findView(ofType: NSTabView.self, in: contentView))
-    let accountsView = try #require(tabView.tabViewItems.last?.view)
+    let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
     let header = try #require(findView(in: accountsView, identifier: "settings.accounts.header"))
     let scrollView = try #require(findView(in: accountsView, identifier: "settings.accounts.scroll") as? NSScrollView)
 
@@ -1074,8 +1348,7 @@ func settingsWindowControllerRendersAccountsAfterLateUpdate() throws {
     )
 
     let contentView = try #require(controller.window?.contentView)
-    let tabView = try #require(findView(ofType: NSTabView.self, in: contentView))
-    let accountsView = try #require(tabView.tabViewItems.last?.view)
+    let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
     let scrollView = try #require(findView(in: accountsView, identifier: "settings.accounts.scroll") as? NSScrollView)
     let tableView = try #require(findView(in: scrollView, identifier: "settings.accounts.table") as? NSTableView)
 
@@ -1274,6 +1547,30 @@ private func findLabel(in root: NSView, where predicate: (String) -> Bool) -> NS
 }
 
 @MainActor
+private func findButton(in window: NSWindow?, identifier: String) -> NSButton? {
+    guard let contentView = window?.contentView else {
+        return nil
+    }
+    return findView(in: contentView, identifier: identifier) as? NSButton
+}
+
+@MainActor
+private func findTextField(in window: NSWindow?, identifier: String) -> NSTextField? {
+    guard let contentView = window?.contentView else {
+        return nil
+    }
+    return findView(in: contentView, identifier: identifier) as? NSTextField
+}
+
+@MainActor
+private func findTableView(in window: NSWindow?, identifier: String) -> NSTableView? {
+    guard let contentView = window?.contentView else {
+        return nil
+    }
+    return findView(in: contentView, identifier: identifier) as? NSTableView
+}
+
+@MainActor
 private final class SettingsPresenterSpy: SettingsWindowPresenting {
     var isVisible = false
     var showCallCount = 0
@@ -1304,6 +1601,7 @@ private final class SettingsPresenterSpy: SettingsWindowPresenting {
 private final class SettingsWindowControllerSpy: SettingsWindowControlling {
     var onSettingsChanged: ((AppSettings) -> Void)?
     var onAddChatGPTAccount: (() -> Void)?
+    var onCancelChatGPTLogin: (() -> Void)?
     var onAddAPIAccount: (() -> Void)?
     var onActivateAccount: ((String) -> Void)?
     var onRenameAccount: ((String) -> Void)?

@@ -194,6 +194,8 @@ final class AppController: NSObject, NSMenuDelegate {
     private var localizationNotice: MenuNotice?
     private var isLaunchingSessionManager = false
     private var foregroundOperationState = ForegroundOperationState()
+    private var chatGPTAccountTask: Task<Void, Never>?
+    private var chatGPTAccountTaskID: UUID?
     private var cachedThreadSyncStatus: LocalThreadSyncStatus?
     private let settingsWindowCoordinator = SettingsWindowCoordinator()
     private var menuTrackingGate = MenuTrackingGate()
@@ -434,18 +436,21 @@ final class AppController: NSObject, NSMenuDelegate {
             action: nil,
             keyEquivalent: ""
         )
+        maintenanceItem.image = menuSymbolImage("wrench", accessibilityDescription: maintenanceItem.title)
         maintenanceItem.submenu = makeMaintenanceMenu()
         menu.addItem(maintenanceItem)
 
         addActionItem(
             title: AppLocalization.localized(en: "Settings…", zh: "设置…"),
             action: #selector(openSettingsTapped),
-            enabled: true
+            enabled: true,
+            symbolName: "gearshape"
         )
         addActionItem(
             title: AppLocalization.localized(en: "Quit", zh: "退出"),
             action: #selector(quitTapped),
-            enabled: true
+            enabled: true,
+            symbolName: "rectangle.and.arrow.right"
         )
     }
 
@@ -481,6 +486,7 @@ final class AppController: NSObject, NSMenuDelegate {
         maintenanceItem.target = nil
         maintenanceItem.representedObject = nil
         maintenanceItem.isEnabled = true
+        maintenanceItem.image = menuSymbolImage("wrench", accessibilityDescription: maintenanceItem.title)
         maintenanceItem.submenu = makeMaintenanceMenu()
 
         let settingsItem = menu.items[quotaSectionEndIndex + 4]
@@ -488,12 +494,14 @@ final class AppController: NSObject, NSMenuDelegate {
         settingsItem.action = #selector(openSettingsTapped)
         settingsItem.target = self
         settingsItem.isEnabled = true
+        settingsItem.image = menuSymbolImage("gearshape", accessibilityDescription: settingsItem.title)
 
         let quitItem = menu.items[quotaSectionEndIndex + 5]
         quitItem.title = AppLocalization.localized(en: "Quit", zh: "退出")
         quitItem.action = #selector(quitTapped)
         quitItem.target = self
         quitItem.isEnabled = true
+        quitItem.image = menuSymbolImage("rectangle.and.arrow.right", accessibilityDescription: quitItem.title)
 
         return true
     }
@@ -515,6 +523,11 @@ final class AppController: NSObject, NSMenuDelegate {
 
     private var isPerformingSafeSwitchOperation: Bool {
         foregroundOperationState.isBusy
+    }
+
+    private var canCancelChatGPTLogin: Bool {
+        foregroundOperationState.activeOperation == .chatGPTBrowserLogin
+            || foregroundOperationState.activeOperation == .chatGPTDeviceLogin
     }
 
     private func presentSafeSwitchNotice(
@@ -599,10 +612,13 @@ final class AppController: NSObject, NSMenuDelegate {
         addDisabledItem(notice.message)
     }
 
-    private func addActionItem(title: String, action: Selector, enabled: Bool) {
+    private func addActionItem(title: String, action: Selector, enabled: Bool, symbolName: String? = nil) {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
         item.isEnabled = enabled
+        if let symbolName {
+            item.image = menuSymbolImage(symbolName, accessibilityDescription: title)
+        }
         menu.addItem(item)
     }
 
@@ -637,6 +653,7 @@ final class AppController: NSObject, NSMenuDelegate {
         item.toolTip = presentation.tooltip
         item.submenu = nil
         item.view = nil
+        item.image = menuSymbolImage("arrow.left.arrow.right", accessibilityDescription: presentation.title)
     }
 
     private func chatGPTProviderModeMenuPresentation() -> ChatGPTProviderModeMenuPresentation {
@@ -713,8 +730,8 @@ final class AppController: NSObject, NSMenuDelegate {
         }
 
         let matchingVaultRecord = matchingVaultRecord(for: currentRuntimeMaterial)
-        let fallbackName = snapshot?.account.displayLabel
-            ?? matchingVaultRecord?.metadata.displayName
+        let fallbackName = matchingVaultRecord?.metadata.displayName
+            ?? snapshot?.account.displayLabel
             ?? AppLocalization.currentAccountFallbackName()
 
         return buildProviderProfile(
@@ -726,7 +743,8 @@ final class AppController: NSObject, NSMenuDelegate {
             healthStatus: healthStatus ?? (errorMessage == nil ? .healthy : .readFailure),
             errorMessage: errorMessage,
             isCurrent: true,
-            quotaFetchedAt: snapshot?.fetchedAt ?? lastRefreshAt
+            quotaFetchedAt: snapshot?.fetchedAt ?? lastRefreshAt,
+            displayNamePreference: .fallbackDisplayName
         )
     }
 
@@ -752,7 +770,7 @@ final class AppController: NSObject, NSMenuDelegate {
     private func confirmSafeSwitch(
         targetProfile: ProviderProfile,
         preview: SwitchOperationPreview
-    ) -> Bool {
+    ) -> SwitchBackupStrategy? {
         foregroundPresentationController.runModal {
             let alert = NSAlert()
             alert.messageText = AppLocalization.localized(
@@ -768,13 +786,31 @@ final class AppController: NSObject, NSMenuDelegate {
                 AppLocalization.localized(en: "Provider: \(targetProfile.providerLabel)", zh: "Provider：\(targetProfile.providerLabel)"),
                 AppLocalization.localized(en: "Files to back up: \(preview.filesToBackup.count)", zh: "需备份文件：\(preview.filesToBackup.count)"),
                 AppLocalization.localized(en: "Rollouts to update: \(preview.rolloutFilesToUpdate.count)", zh: "需更新 rollout：\(preview.rolloutFilesToUpdate.count)"),
+                preview.remote.map {
+                    AppLocalization.localized(
+                        en: "Remote sync: \($0.sshTarget) \($0.codexHomePath). Remote Codex processes are not stopped.",
+                        zh: "远端同步：\($0.sshTarget) \($0.codexHomePath)。不会停止远端 Codex 进程。"
+                    )
+                },
                 preview.codexWasRunning
                     ? AppLocalization.localized(en: "Codex will be closed and reopened automatically.", zh: "Codex 会自动关闭并重新打开。")
                     : AppLocalization.localized(en: "Codex is not running, so no reopen is needed.", zh: "Codex 当前未运行，无需重新打开。"),
-            ].joined(separator: "\n")
+                AppLocalization.localized(
+                    en: "Direct switch skips local and remote backups. No restore point will be created.",
+                    zh: "直接切换会跳过本地和远端备份，不会创建还原点。"
+                ),
+            ].compactMap { $0 }.joined(separator: "\n")
             alert.addButton(withTitle: AppLocalization.localized(en: "Switch Safely", zh: "安全切换"))
+            alert.addButton(withTitle: AppLocalization.localized(en: "Direct Switch (No Backup)", zh: "直接切换（不备份）"))
             alert.addButton(withTitle: AppLocalization.localized(en: "Cancel", zh: "取消"))
-            return alert.runModal() == .alertFirstButtonReturn
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                return .createRestorePoint
+            case .alertSecondButtonReturn:
+                return .directWithoutBackup
+            default:
+                return nil
+            }
         }
     }
 
@@ -794,6 +830,39 @@ final class AppController: NSObject, NSMenuDelegate {
             alert.addButton(withTitle: AppLocalization.localized(en: "Cancel", zh: "取消"))
             return alert.runModal() == .alertFirstButtonReturn
         }
+    }
+
+    private func safeSwitchSuccessMessage(
+        targetProfile: ProviderProfile,
+        result: SwitchOperationResult
+    ) -> String {
+        let base: String
+        if let restorePoint = result.restorePoint {
+            base = AppLocalization.localized(
+                en: "Switched to \(targetProfile.displayName). Restore point \(restorePoint.id) is ready.",
+                zh: "已切换到 \(targetProfile.displayName)。还原点 \(restorePoint.id) 已创建。"
+            )
+        } else {
+            base = AppLocalization.localized(
+                en: "Switched to \(targetProfile.displayName) without creating a restore point.",
+                zh: "已直接切换到 \(targetProfile.displayName)，未创建还原点。"
+            )
+        }
+        guard let remote = result.remoteResult else {
+            return base
+        }
+
+        let remoteText = AppLocalization.localized(
+            en: " Remote synced to \(remote.sshTarget); updated \(remote.updatedRolloutCount) remote rollout(s).",
+            zh: " 已同步远端 \(remote.sshTarget)，更新 \(remote.updatedRolloutCount) 个远端 rollout。"
+        )
+        let warningText = remote.warningCount > 0
+            ? AppLocalization.localized(
+                en: " \(remote.warningCount) remote warning(s).",
+                zh: " 远端有 \(remote.warningCount) 个警告。"
+            )
+            : ""
+        return base + remoteText + warningText
     }
 
     private func confirmEnterChatGPTProviderMode(record: VaultAccountRecord) -> Bool {
@@ -878,6 +947,23 @@ final class AppController: NSObject, NSMenuDelegate {
     @objc
     private func addChatGPTAccountTapped() {
         startChatGPTAccountFlow(useDeviceAuth: false)
+    }
+
+    private func cancelChatGPTAccountLogin() {
+        guard canCancelChatGPTLogin else {
+            return
+        }
+
+        presentSafeSwitchNotice(
+            MenuNotice(
+                kind: .info,
+                message: AppLocalization.localized(en: "Cancelling ChatGPT login…", zh: "正在取消 ChatGPT 登录…")
+            ),
+            lifetime: .operationBound
+        )
+        chatGPTAccountTask?.cancel()
+        refreshSettingsAccountPanel()
+        rebuildMenu(reason: "chatgpt-login-cancel")
     }
 
     @objc
@@ -1207,7 +1293,10 @@ final class AppController: NSObject, NSMenuDelegate {
 
         let preview: SwitchOperationPreview
         do {
-            preview = try switchOrchestrator.preview(targetProfile: targetProfile)
+            preview = try switchOrchestrator.preview(
+                targetProfile: targetProfile,
+                remoteSettings: settings.remoteSwitch
+            )
         } catch {
             endForegroundOperation(.safeSwitch)
             AppLog.safeSwitch.error("Safe switch preview failed: \(self.userFacingMessage(for: error), privacy: .public)")
@@ -1219,18 +1308,28 @@ final class AppController: NSObject, NSMenuDelegate {
             return
         }
 
-        guard confirmSafeSwitch(targetProfile: targetProfile, preview: preview) else {
+        guard let backupStrategy = confirmSafeSwitch(targetProfile: targetProfile, preview: preview) else {
             endForegroundOperation(.safeSwitch)
             return
+        }
+
+        let switchingMessage = switch backupStrategy {
+        case .createRestorePoint:
+            AppLocalization.localized(
+                en: "Switching to \(targetProfile.displayName)…",
+                zh: "正在切换到 \(targetProfile.displayName)…"
+            )
+        case .directWithoutBackup:
+            AppLocalization.localized(
+                en: "Switching directly to \(targetProfile.displayName) without backup…",
+                zh: "正在不备份直接切换到 \(targetProfile.displayName)…"
+            )
         }
 
         presentSafeSwitchNotice(
             MenuNotice(
                 kind: .info,
-                message: AppLocalization.localized(
-                    en: "Switching to \(targetProfile.displayName)…",
-                    zh: "正在切换到 \(targetProfile.displayName)…"
-                )
+                message: switchingMessage
             ),
             lifetime: .operationBound
         )
@@ -1240,9 +1339,18 @@ final class AppController: NSObject, NSMenuDelegate {
             guard let self else { return }
 
             do {
-                let result = try await self.switchOrchestrator.perform(targetProfile: targetProfile)
+                let result = try await self.switchOrchestrator.perform(
+                    targetProfile: targetProfile,
+                    remoteSettings: self.settings.remoteSwitch,
+                    backupStrategy: backupStrategy
+                )
                 if targetProfile.source == .vault {
-                    let writer = ProtectedFileMutationContext(restorePoint: result.restorePoint)
+                    let writer: FileDataWriting
+                    if let restorePoint = result.restorePoint {
+                        writer = ProtectedFileMutationContext(restorePoint: restorePoint)
+                    } else {
+                        writer = DirectFileDataWriter()
+                    }
                     do {
                         _ = try self.vaultStore.noteAccountUsed(id: targetProfile.id, writer: writer)
                     } catch {
@@ -1268,9 +1376,9 @@ final class AppController: NSObject, NSMenuDelegate {
                 self.presentSafeSwitchNotice(
                     MenuNotice(
                         kind: .info,
-                        message: AppLocalization.localized(
-                            en: "Switched to \(targetProfile.displayName). Restore point \(result.restorePoint.id) is ready.",
-                            zh: "已切换到 \(targetProfile.displayName)。还原点 \(result.restorePoint.id) 已创建。"
+                        message: self.safeSwitchSuccessMessage(
+                            targetProfile: targetProfile,
+                            result: result
                         )
                     ),
                     lifetime: .timed(4)
@@ -1287,8 +1395,12 @@ final class AppController: NSObject, NSMenuDelegate {
                         en: "Safe switch failed",
                         zh: "安全切换失败",
                         error: error,
-                        suffixEN: ". Use “Rollback Last Change” if needed.",
-                        suffixZH: "。如有需要，请使用“回滚上次变更”。"
+                        suffixEN: backupStrategy == .createRestorePoint
+                            ? ". Use “Rollback Last Change” if needed."
+                            : ". No restore point was created for this direct switch.",
+                        suffixZH: backupStrategy == .createRestorePoint
+                            ? "。如有需要，请使用“回滚上次变更”。"
+                            : "。本次直接切换未创建还原点。"
                     ),
                     lifetime: .persistent
                 )
@@ -1506,7 +1618,8 @@ final class AppController: NSObject, NSMenuDelegate {
                 vaultProfiles: vaultProfiles,
                 currentProviderProfile: currentProviderProfile,
                 refreshIntervalPreset: settings.refreshIntervalPreset,
-                actionsEnabled: !isPerformingSafeSwitchOperation
+                actionsEnabled: !isPerformingSafeSwitchOperation,
+                canCancelChatGPTLogin: canCancelChatGPTLogin
             )
         )
     }
@@ -1539,6 +1652,9 @@ final class AppController: NSObject, NSMenuDelegate {
             },
             onAddChatGPTAccount: { [weak self] in
                 self?.addChatGPTAccountTapped()
+            },
+            onCancelChatGPTLogin: { [weak self] in
+                self?.cancelChatGPTAccountLogin()
             },
             onAddAPIAccount: { [weak self] in
                 self?.addAPIAccountTapped()
@@ -1606,7 +1722,8 @@ final class AppController: NSObject, NSMenuDelegate {
                 isCurrent: runtimeMatches(record.runtimeMaterial, currentRuntimeMaterial),
                 managedFileURLs: [store.settingsURL, store.accountsIndexURL] + record.protectedFileURLs,
                 lastUsedAt: record.metadata.lastUsedAt,
-                quotaFetchedAt: quotaRecord?.fetchedAt
+                quotaFetchedAt: quotaRecord?.fetchedAt,
+                displayNamePreference: .fallbackDisplayName
             )
         }
 
@@ -1731,7 +1848,9 @@ final class AppController: NSObject, NSMenuDelegate {
         )
         rebuildMenu()
 
-        Task { @MainActor [weak self] in
+        let taskID = UUID()
+        chatGPTAccountTaskID = taskID
+        let task = Task { @MainActor [weak self] in
             guard let self else { return }
             var shouldEndOperation = true
 
@@ -1739,6 +1858,10 @@ final class AppController: NSObject, NSMenuDelegate {
                 if shouldEndOperation {
                     self.endForegroundOperation(operation)
                     self.refreshAllProfiles()
+                }
+                if self.chatGPTAccountTaskID == taskID {
+                    self.chatGPTAccountTask = nil
+                    self.chatGPTAccountTaskID = nil
                 }
             }
 
@@ -1762,6 +1885,28 @@ final class AppController: NSObject, NSMenuDelegate {
                     lifetime: .timed(4)
                 )
             } catch {
+                if self.isChatGPTLoginCancellationError(error) {
+                    self.presentSafeSwitchNotice(
+                        MenuNotice(
+                            kind: .info,
+                            message: AppLocalization.localized(en: "ChatGPT login cancelled.", zh: "ChatGPT 登录已取消。")
+                        ),
+                        lifetime: .timed(4)
+                    )
+                    return
+                }
+
+                if self.isChatGPTLoginTimeoutError(error) {
+                    self.presentSafeSwitchNotice(
+                        MenuNotice(
+                            kind: .error,
+                            message: self.userFacingMessage(for: error)
+                        ),
+                        lifetime: .persistent
+                    )
+                    return
+                }
+
                 if !useDeviceAuth,
                    self.confirmDeviceAuthFallback(error: error) {
                     shouldEndOperation = false
@@ -1779,6 +1924,28 @@ final class AppController: NSObject, NSMenuDelegate {
                 )
             }
         }
+        chatGPTAccountTask = task
+    }
+
+    private func isChatGPTLoginCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        if let onboardingError = error as? AccountOnboardingError {
+            if case .loginCancelled = onboardingError {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func isChatGPTLoginTimeoutError(_ error: Error) -> Bool {
+        if let onboardingError = error as? AccountOnboardingError {
+            if case .loginTimedOut = onboardingError {
+                return true
+            }
+        }
+        return false
     }
 
     private func confirmDeviceAuthFallback(error: Error) -> Bool {

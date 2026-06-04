@@ -5,7 +5,8 @@ func buildSettingsAccountPanelState(
     vaultProfiles: [ProviderProfile],
     currentProviderProfile: ProviderProfile?,
     refreshIntervalPreset: RefreshIntervalPreset,
-    actionsEnabled: Bool
+    actionsEnabled: Bool,
+    canCancelChatGPTLogin: Bool = false
 ) -> SettingsAccountPanelState {
     let inputs = (vaultSnapshot?.accounts ?? []).map { record in
         let matchingProfile = vaultProfiles.first(where: { $0.id == record.id })
@@ -34,7 +35,8 @@ func buildSettingsAccountPanelState(
     return SettingsAccountPanelState(
         importStatusText: AppLocalization.accountVaultSummary(savedCount: vaultSnapshot?.accounts.count ?? 0),
         sections: buildSettingsAccountSections(inputs),
-        actionsEnabled: actionsEnabled
+        actionsEnabled: actionsEnabled,
+        canCancelChatGPTLogin: canCancelChatGPTLogin
     )
 }
 

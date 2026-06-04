@@ -28,9 +28,26 @@ final class SettingsAccountsTableController: NSObject, NSTableViewDataSource, NS
             [SettingsAccountsTableRow.section(section)] + section.items.map(SettingsAccountsTableRow.account)
         }
 
+        refreshLayout()
         tableView.reloadData()
-        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0 ..< rows.count))
+        if !rows.isEmpty {
+            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0 ..< rows.count))
+        }
         tableView.layoutSubtreeIfNeeded()
+    }
+
+    func refreshLayout() {
+        let clipSize = tableView.enclosingScrollView?.contentView.bounds.size ?? .zero
+        let rowHeight = rows.indices.reduce(CGFloat(0)) { total, index in
+            total + tableView(tableView, heightOfRow: index)
+        }
+        let spacingHeight = max(0, CGFloat(rows.count - 1)) * tableView.intercellSpacing.height
+        let contentHeight = rowHeight + spacingHeight
+        let width = max(clipSize.width, tableView.bounds.width, 1)
+        let height = max(clipSize.height, contentHeight, 1)
+
+        tableView.tableColumns.first?.width = width
+        tableView.setFrameSize(NSSize(width: width, height: height))
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {

@@ -83,6 +83,7 @@ struct AppSettings: Codable, Equatable {
     var appLanguage: AppLanguage
     var lastResolvedLanguage: ResolvedAppLanguage?
     var preferredAccountID: String?
+    var remoteSwitch: RemoteSwitchSettings
 
     init(
         refreshIntervalPreset: RefreshIntervalPreset = .fiveMinutes,
@@ -90,7 +91,8 @@ struct AppSettings: Codable, Equatable {
         statusItemStyle: StatusItemStyle = .meter,
         appLanguage: AppLanguage = .system,
         lastResolvedLanguage: ResolvedAppLanguage? = nil,
-        preferredAccountID: String? = nil
+        preferredAccountID: String? = nil,
+        remoteSwitch: RemoteSwitchSettings = RemoteSwitchSettings()
     ) {
         self.refreshIntervalPreset = refreshIntervalPreset
         self.launchAtLoginEnabled = launchAtLoginEnabled
@@ -98,6 +100,7 @@ struct AppSettings: Codable, Equatable {
         self.appLanguage = appLanguage
         self.lastResolvedLanguage = lastResolvedLanguage
         self.preferredAccountID = preferredAccountID
+        self.remoteSwitch = remoteSwitch
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -107,6 +110,7 @@ struct AppSettings: Codable, Equatable {
         case appLanguage
         case lastResolvedLanguage
         case preferredAccountID
+        case remoteSwitch
     }
 
     init(from decoder: Decoder) throws {
@@ -135,6 +139,10 @@ struct AppSettings: Codable, Equatable {
             String.self,
             forKey: .preferredAccountID
         )
+        remoteSwitch = try container.decodeIfPresent(
+            RemoteSwitchSettings.self,
+            forKey: .remoteSwitch
+        ) ?? RemoteSwitchSettings()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -145,6 +153,90 @@ struct AppSettings: Codable, Equatable {
         try container.encode(appLanguage, forKey: .appLanguage)
         try container.encodeIfPresent(lastResolvedLanguage, forKey: .lastResolvedLanguage)
         try container.encodeIfPresent(preferredAccountID, forKey: .preferredAccountID)
+        try container.encode(remoteSwitch, forKey: .remoteSwitch)
+    }
+}
+
+struct RemoteSwitchSettings: Codable, Equatable, Sendable {
+    static let defaultCodexHomePath = "~/.codex"
+
+    var enabled: Bool
+    var sshTargets: [String]
+    var codexHomePath: String
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case sshTargets
+        case sshTarget
+        case codexHomePath
+    }
+
+    init(
+        enabled: Bool = false,
+        sshTarget: String = "",
+        sshTargets: [String] = [],
+        codexHomePath: String = Self.defaultCodexHomePath
+    ) {
+        self.enabled = enabled
+        self.sshTargets = Self.normalizedSSHTargets(sshTargets + [sshTarget])
+        self.codexHomePath = codexHomePath
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        let decodedTargets = try container.decodeIfPresent([String].self, forKey: .sshTargets) ?? []
+        let legacyTarget = try container.decodeIfPresent(String.self, forKey: .sshTarget) ?? ""
+        sshTargets = Self.normalizedSSHTargets(decodedTargets + [legacyTarget])
+        codexHomePath = try container.decodeIfPresent(String.self, forKey: .codexHomePath)
+            ?? Self.defaultCodexHomePath
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(trimmedSSHTargets, forKey: .sshTargets)
+        try container.encode(trimmedSSHTarget, forKey: .sshTarget)
+        try container.encode(codexHomePath, forKey: .codexHomePath)
+    }
+
+    var sshTarget: String {
+        get {
+            trimmedSSHTarget
+        }
+        set {
+            sshTargets = Self.normalizedSSHTargets([newValue])
+        }
+    }
+
+    var trimmedSSHTarget: String {
+        trimmedSSHTargets.first ?? ""
+    }
+
+    var trimmedSSHTargets: [String] {
+        Self.normalizedSSHTargets(sshTargets)
+    }
+
+    var effectiveCodexHomePath: String {
+        let trimmed = codexHomePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? Self.defaultCodexHomePath : trimmed
+    }
+
+    var shouldSyncRemote: Bool {
+        enabled && !trimmedSSHTargets.isEmpty
+    }
+
+    private static func normalizedSSHTargets(_ targets: [String]) -> [String] {
+        var seen = Set<String>()
+        var normalized: [String] = []
+        for target in targets {
+            let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else {
+                continue
+            }
+            normalized.append(trimmed)
+        }
+        return normalized
     }
 }
 
@@ -257,9 +349,6 @@ private func quotaWindowLabel(
         return AppLocalization.localized(en: "quota \(position + 1)", zh: "额度 \(position + 1)")
     }
 
-    if durationMins % 10_080 == 0 {
-        return "\(durationMins / 10_080)w"
-    }
     if durationMins % 1_440 == 0 {
         return "\(durationMins / 1_440)d"
     }

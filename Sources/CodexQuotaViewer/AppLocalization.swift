@@ -128,7 +128,7 @@ enum AppLocalization {
     }
 
     static func statusPlaceholderSummary() -> String {
-        localized(en: "5h- 1w-", zh: "5小时- 1周-")
+        localized(en: "5h- 7d-", zh: "5小时- 7天-")
     }
 
     static func currentAccountFallbackName() -> String {

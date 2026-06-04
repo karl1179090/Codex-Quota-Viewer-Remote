@@ -308,6 +308,48 @@ func accountOnboardingCoordinatorImportsChatGPTLoginFromTemporaryCodexHome() asy
 
 @MainActor
 @Test
+func accountOnboardingCoordinatorTimesOutHangingChatGPTLoginProcess() async throws {
+    let harness = try makeHarness()
+    let vault = makeVaultStore(harness)
+    let executableURL = harness.homeURL.appendingPathComponent("hanging-codex", isDirectory: false)
+    try Data(
+        """
+        #!/bin/sh
+        fifo="${TMPDIR:-/tmp}/cqv-login-timeout-$$"
+        /usr/bin/mkfifo "$fifo"
+        trap 'rm -f "$fifo"; exit 143' TERM INT
+        read _ < "$fifo"
+        rm -f "$fifo"
+        """.utf8
+    ).write(to: executableURL, options: .atomic)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755],
+        ofItemAtPath: executableURL.path
+    )
+
+    let coordinator = AccountOnboardingCoordinator(
+        vaultStore: vault,
+        backupManager: makeBackupManager(harness),
+        protectedFilesProvider: makeProtectedFilesProvider(for: vault),
+        codexExecutableURL: executableURL,
+        bundledCodexExecutableURL: executableURL,
+        loginTimeout: 0.05
+    )
+
+    do {
+        _ = try await coordinator.addChatGPTAccount()
+        Issue.record("Expected hanging ChatGPT login to time out.")
+    } catch AccountOnboardingError.loginTimedOut(let timeout) {
+        #expect(timeout == 0.05)
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+
+    #expect(try vault.loadSnapshot().accounts.isEmpty)
+}
+
+@MainActor
+@Test
 func accountOnboardingCoordinatorCreatesOpenAICompatibleAPIAccountWithCustomProviderConfig() async throws {
     let harness = try makeHarness()
     let vault = makeVaultStore(harness)

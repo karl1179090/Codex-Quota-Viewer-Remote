@@ -8,6 +8,7 @@ protocol SettingsWindowControlling: AnyObject {
 
     var onSettingsChanged: ((AppSettings) -> Void)? { get set }
     var onAddChatGPTAccount: (() -> Void)? { get set }
+    var onCancelChatGPTLogin: (() -> Void)? { get set }
     var onAddAPIAccount: (() -> Void)? { get set }
     var onActivateAccount: ((String) -> Void)? { get set }
     var onRenameAccount: ((String) -> Void)? { get set }
@@ -110,6 +111,7 @@ final class SettingsWindowCoordinator {
     ) {
         controller.onSettingsChanged = callbacks.onSettingsChanged
         controller.onAddChatGPTAccount = callbacks.onAddChatGPTAccount
+        controller.onCancelChatGPTLogin = callbacks.onCancelChatGPTLogin
         controller.onAddAPIAccount = callbacks.onAddAPIAccount
         controller.onActivateAccount = callbacks.onActivateAccount
         controller.onRenameAccount = callbacks.onRenameAccount

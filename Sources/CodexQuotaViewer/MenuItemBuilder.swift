@@ -1,6 +1,15 @@
 import AppKit
 import Foundation
 
+func menuSymbolImage(_ symbolName: String, accessibilityDescription: String? = nil) -> NSImage? {
+    guard let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription) else {
+        return nil
+    }
+
+    image.isTemplate = true
+    return image
+}
+
 @MainActor
 func buildQuotaOverviewMenuItems(
     quotaOverviewState: QuotaOverviewState?,
@@ -42,6 +51,7 @@ func buildQuotaOverviewMenuItems(
         action: nil,
         keyEquivalent: ""
     )
+    allAccountsItem.image = menuSymbolImage("person.2", accessibilityDescription: allAccountsItem.title)
     allAccountsItem.submenu = buildAllAccountsMenu(
         quotaOverviewState: quotaOverviewState,
         refreshIntervalPreset: refreshIntervalPreset,
@@ -178,6 +188,7 @@ private func configureAllAccountsItem(
     item.isEnabled = true
     item.toolTip = nil
     item.view = nil
+    item.image = menuSymbolImage("person.2", accessibilityDescription: item.title)
     item.submenu = buildAllAccountsMenu(
         quotaOverviewState: quotaOverviewState,
         refreshIntervalPreset: refreshIntervalPreset,
@@ -328,6 +339,7 @@ func makeChatGPTProviderModeMenuItem(
     item.isEnabled = presentation.isEnabled
     item.state = presentation.isActive ? .on : .off
     item.toolTip = presentation.tooltip
+    item.image = menuSymbolImage("arrow.left.arrow.right", accessibilityDescription: presentation.title)
     return item
 }
 

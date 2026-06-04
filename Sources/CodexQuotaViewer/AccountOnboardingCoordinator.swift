@@ -28,6 +28,8 @@ struct DeviceAuthInstructions: Equatable {
 enum AccountOnboardingError: LocalizedError {
     case codexExecutableMissing
     case loginFailed(String)
+    case loginTimedOut(TimeInterval)
+    case loginCancelled
     case missingAuthMaterial
 
     var errorDescription: String? {
@@ -39,6 +41,17 @@ enum AccountOnboardingError: LocalizedError {
             )
         case .loginFailed(let message):
             return message
+        case .loginTimedOut(let timeout):
+            let minutes = max(1, Int(ceil(max(timeout, 0) / 60)))
+            return AppLocalization.localized(
+                en: "ChatGPT login timed out after \(minutes) minutes.",
+                zh: "ChatGPT 登录等待超过 \(minutes) 分钟，已自动取消。"
+            )
+        case .loginCancelled:
+            return AppLocalization.localized(
+                en: "ChatGPT login was cancelled.",
+                zh: "ChatGPT 登录已取消。"
+            )
         case .missingAuthMaterial:
             return AppLocalization.localized(
                 en: "Codex login did not produce auth.json.",
@@ -62,6 +75,7 @@ final class AccountOnboardingCoordinator {
     private let preferredCodexExecutableURL: URL
     private let bundledCodexExecutableURL: URL
     private let processEnvironment: [String: String]
+    private let loginTimeout: TimeInterval
 
     init(
         vaultStore: VaultAccountStore,
@@ -71,6 +85,7 @@ final class AccountOnboardingCoordinator {
         bundledCodexExecutableURL: URL = URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex", isDirectory: false),
         fileManager: FileManager = .default,
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        loginTimeout: TimeInterval = 600,
         apiModelsProbe: APIModelsProbing = URLSessionAPIModelsProbe(),
         processRunner: ProcessRunner? = nil
     ) {
@@ -81,8 +96,11 @@ final class AccountOnboardingCoordinator {
         self.bundledCodexExecutableURL = bundledCodexExecutableURL
         self.fileManager = fileManager
         self.processEnvironment = processEnvironment
+        self.loginTimeout = loginTimeout
         self.apiModelsProbe = apiModelsProbe
-        self.processRunner = processRunner ?? Self.defaultProcessRunner
+        self.processRunner = processRunner ?? { command in
+            try await Self.defaultProcessRunner(command, timeout: loginTimeout)
+        }
     }
 
     func addChatGPTAccount(useDeviceAuth: Bool = false) async throws -> AccountOnboardingResult {
@@ -128,7 +146,11 @@ final class AccountOnboardingCoordinator {
         )
         let result = try await (
             useDeviceAuth
-                ? runDeviceAuthProcess(command: command, deviceAuthHandler: deviceAuthHandler)
+                ? runDeviceAuthProcess(
+                    command: command,
+                    deviceAuthHandler: deviceAuthHandler,
+                    timeout: loginTimeout
+                )
                 : processRunner(command)
         )
         guard result.exitStatus == 0 else {
@@ -267,7 +289,8 @@ final class AccountOnboardingCoordinator {
     }
 
     private static func defaultProcessRunner(
-        _ command: AccountOnboardingProcessCommand
+        _ command: AccountOnboardingProcessCommand,
+        timeout: TimeInterval
     ) async throws -> AccountOnboardingProcessResult {
         let process = Process()
         process.executableURL = command.codexExecutableURL
@@ -279,25 +302,60 @@ final class AccountOnboardingCoordinator {
         process.standardOutput = stdout
         process.standardError = stderr
 
+        return try await runOnboardingProcess(
+            process,
+            stdout: stdout,
+            stderr: stderr,
+            timeout: timeout
+        )
+    }
+
+    nonisolated private static func runOnboardingProcess(
+        _ process: Process,
+        stdout: Pipe?,
+        stderr: Pipe?,
+        timeout: TimeInterval
+    ) async throws -> AccountOnboardingProcessResult {
+        let processState = AccountOnboardingProcessRunState(
+            process: process,
+            stdout: stdout,
+            stderr: stderr
+        )
+        process.terminationHandler = { process in
+            processState.processExited(process)
+        }
+
         try process.run()
-        return try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { process in
-                let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-                let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
-                continuation.resume(
-                    returning: AccountOnboardingProcessResult(
-                        exitStatus: process.terminationStatus,
-                        standardOutput: String(data: outputData, encoding: .utf8) ?? "",
-                        standardError: String(data: errorData, encoding: .utf8) ?? ""
-                    )
-                )
+
+        return try await withTaskCancellationHandler {
+            try await withThrowingTaskGroup(of: AccountOnboardingProcessResult.self) { group in
+                group.addTask {
+                    try await processState.waitForResult()
+                }
+                group.addTask {
+                    try await sleepForAccountOnboardingTimeout(timeout)
+                    processState.cancel(error: AccountOnboardingError.loginTimedOut(timeout))
+                    throw AccountOnboardingError.loginTimedOut(timeout)
+                }
+
+                defer {
+                    group.cancelAll()
+                }
+
+                guard let result = try await group.next() else {
+                    throw AccountOnboardingError.loginCancelled
+                }
+                return result
             }
+        } onCancel: {
+            processState.cancel(error: AccountOnboardingError.loginCancelled)
         }
     }
 
     private func runDeviceAuthProcess(
         command: AccountOnboardingProcessCommand,
-        deviceAuthHandler: ((DeviceAuthInstructions) -> Void)?
+        deviceAuthHandler: ((DeviceAuthInstructions) -> Void)?,
+        timeout: TimeInterval
     ) async throws -> AccountOnboardingProcessResult {
         let process = Process()
         process.executableURL = command.codexExecutableURL
@@ -308,8 +366,6 @@ final class AccountOnboardingCoordinator {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
-
-        try process.run()
 
         let stdoutTask = Task<String, Never> {
             var collected = ""
@@ -338,14 +394,15 @@ final class AccountOnboardingCoordinator {
             return String(data: data ?? Data(), encoding: .utf8) ?? ""
         }
 
-        let exitStatus = await withCheckedContinuation { continuation in
-            process.terminationHandler = { process in
-                continuation.resume(returning: process.terminationStatus)
-            }
-        }
+        let result = try await Self.runOnboardingProcess(
+            process,
+            stdout: nil,
+            stderr: nil,
+            timeout: timeout
+        )
 
         return AccountOnboardingProcessResult(
-            exitStatus: exitStatus,
+            exitStatus: result.exitStatus,
             standardOutput: await stdoutTask.value,
             standardError: await stderrTask.value
         )
@@ -365,4 +422,103 @@ final class AccountOnboardingCoordinator {
             userCode: String(output[codeRange])
         )
     }
+}
+
+private final class AccountOnboardingProcessRunState: @unchecked Sendable {
+    private let process: Process
+    private let stdout: Pipe?
+    private let stderr: Pipe?
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<AccountOnboardingProcessResult, Error>?
+    private var pendingCompletion: Result<AccountOnboardingProcessResult, Error>?
+    private var hasCompleted = false
+
+    init(process: Process, stdout: Pipe?, stderr: Pipe?) {
+        self.process = process
+        self.stdout = stdout
+        self.stderr = stderr
+    }
+
+    func waitForResult() async throws -> AccountOnboardingProcessResult {
+        try await withCheckedThrowingContinuation { continuation in
+            setContinuation(continuation)
+        }
+    }
+
+    func processExited(_ process: Process) {
+        let outputData = stdout?.fileHandleForReading.readDataToEndOfFile() ?? Data()
+        let errorData = stderr?.fileHandleForReading.readDataToEndOfFile() ?? Data()
+        complete(
+            .success(
+                AccountOnboardingProcessResult(
+                    exitStatus: process.terminationStatus,
+                    standardOutput: String(data: outputData, encoding: .utf8) ?? "",
+                    standardError: String(data: errorData, encoding: .utf8) ?? ""
+                )
+            )
+        )
+    }
+
+    func cancel(error: Error) {
+        if process.isRunning {
+            process.terminate()
+        }
+        complete(.failure(error))
+    }
+
+    private func setContinuation(_ nextContinuation: CheckedContinuation<AccountOnboardingProcessResult, Error>) {
+        let completion: Result<AccountOnboardingProcessResult, Error>?
+        lock.lock()
+        if let pendingCompletion {
+            completion = pendingCompletion
+            self.pendingCompletion = nil
+        } else {
+            completion = nil
+            continuation = nextContinuation
+        }
+        lock.unlock()
+
+        if let completion {
+            resume(nextContinuation, with: completion)
+        }
+    }
+
+    private func complete(_ completion: Result<AccountOnboardingProcessResult, Error>) {
+        let continuationToResume: CheckedContinuation<AccountOnboardingProcessResult, Error>?
+        lock.lock()
+        guard !hasCompleted else {
+            lock.unlock()
+            return
+        }
+        hasCompleted = true
+        if let continuation {
+            continuationToResume = continuation
+            self.continuation = nil
+        } else {
+            continuationToResume = nil
+            pendingCompletion = completion
+        }
+        lock.unlock()
+
+        if let continuationToResume {
+            resume(continuationToResume, with: completion)
+        }
+    }
+
+    private func resume(
+        _ continuation: CheckedContinuation<AccountOnboardingProcessResult, Error>,
+        with completion: Result<AccountOnboardingProcessResult, Error>
+    ) {
+        switch completion {
+        case .success(let result):
+            continuation.resume(returning: result)
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+}
+
+private func sleepForAccountOnboardingTimeout(_ timeout: TimeInterval) async throws {
+    let nanoseconds = UInt64(max(timeout, 0) * 1_000_000_000)
+    try await Task.sleep(nanoseconds: nanoseconds)
 }

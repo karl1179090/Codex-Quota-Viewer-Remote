@@ -11,6 +11,38 @@ ICON_ICNS="$ROOT_DIR/.build/AppIcon.icns"
 APP_ICON_ASSETS_DIR="$APP_DIR/Contents/Resources/AppIconAssets"
 SESSION_MANAGER_RESOURCES_DIR="$APP_DIR/Contents/Resources/SessionManager"
 
+clean_bundle_metadata_before_signing() {
+  local bundle_dir="$1"
+
+  find "$bundle_dir" \( -name '._*' -o -name '.DS_Store' \) -delete
+  chmod -R u+w "$bundle_dir" 2>/dev/null || true
+  xattr -cr "$bundle_dir" 2>/dev/null || true
+  xattr -dr com.apple.FinderInfo "$bundle_dir" 2>/dev/null || true
+  xattr -dr 'com.apple.fileprovider.fpfs#P' "$bundle_dir" 2>/dev/null || true
+  xattr -dr com.apple.provenance "$bundle_dir" 2>/dev/null || true
+  xattr -c "$bundle_dir" 2>/dev/null || true
+  xattr -d com.apple.FinderInfo "$bundle_dir" 2>/dev/null || true
+  xattr -d 'com.apple.fileprovider.fpfs#P' "$bundle_dir" 2>/dev/null || true
+}
+
+sign_app_bundle() {
+  local source_app_dir="$1"
+  local signing_root="${TMPDIR:-/tmp}/codex-quota-viewer-signing-$$"
+  local signing_app_dir="$signing_root/$APP_NAME.app"
+
+  rm -rf "$signing_root"
+  mkdir -p "$signing_root"
+  ditto --noextattr "$source_app_dir" "$signing_app_dir"
+  clean_bundle_metadata_before_signing "$signing_app_dir"
+  xattr -c "$signing_app_dir" 2>/dev/null || true
+  codesign --force --deep --sign - "$signing_app_dir"
+
+  rm -rf "$source_app_dir"
+  ditto --noextattr "$signing_app_dir" "$source_app_dir"
+  clean_bundle_metadata_before_signing "$source_app_dir"
+  rm -rf "$signing_root"
+}
+
 cd "$ROOT_DIR"
 
 swift package clean
@@ -64,14 +96,14 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-xattr -cr "$APP_DIR" 2>/dev/null || true
+clean_bundle_metadata_before_signing "$APP_DIR"
 
 if command -v codesign >/dev/null 2>&1; then
-  codesign --force --deep --sign - "$APP_DIR"
+  sign_app_bundle "$APP_DIR"
 else
   echo "warning: codesign is unavailable; skipping ad-hoc signing." >&2
 fi
 
-xattr -cr "$APP_DIR" 2>/dev/null || true
+clean_bundle_metadata_before_signing "$APP_DIR"
 
 echo "Built app: $APP_NAME.app"

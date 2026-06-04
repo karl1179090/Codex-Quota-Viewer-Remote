@@ -9,6 +9,7 @@ final class SettingsAccountsView: NSView {
     let importStatusLabel = NSTextField(labelWithString: "")
     let addChatGPTButton = NSButton(title: "", target: nil, action: nil)
     let addAPIButton = NSButton(title: "", target: nil, action: nil)
+    let cancelChatGPTLoginButton = NSButton(title: "", target: nil, action: nil)
     let openVaultButton = NSButton(title: "", target: nil, action: nil)
 
     override init(frame frameRect: NSRect) {
@@ -25,6 +26,7 @@ final class SettingsAccountsView: NSView {
     func applyLocalizedText() {
         addChatGPTButton.title = AppLocalization.localized(en: "Sign in with ChatGPT", zh: "使用 ChatGPT 登录")
         addAPIButton.title = AppLocalization.localized(en: "Add API Account", zh: "添加 API 账号")
+        cancelChatGPTLoginButton.title = AppLocalization.localized(en: "Cancel Login", zh: "取消登录")
         openVaultButton.title = AppLocalization.localized(en: "Open Vault Folder", zh: "打开账号仓文件夹")
     }
 
@@ -45,11 +47,12 @@ final class SettingsAccountsView: NSView {
         scrollView.documentView = tableView
         addSubview(scrollView)
 
-        [addChatGPTButton, addAPIButton, openVaultButton].forEach {
+        [addChatGPTButton, addAPIButton, cancelChatGPTLoginButton, openVaultButton].forEach {
             $0.controlSize = .small
         }
+        cancelChatGPTLoginButton.isHidden = true
 
-        let primaryActions = NSStackView(views: [addChatGPTButton, addAPIButton])
+        let primaryActions = NSStackView(views: [addChatGPTButton, addAPIButton, cancelChatGPTLoginButton])
         primaryActions.orientation = .horizontal
         primaryActions.alignment = .centerY
         primaryActions.spacing = 10

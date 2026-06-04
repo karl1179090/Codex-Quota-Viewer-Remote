@@ -236,7 +236,7 @@ func quotaOverviewRowQuotaTexts(for profile: ProviderProfile) -> QuotaOverviewRo
         uniqueKeysWithValues: quotaDisplayWindows(for: profile).map { ($0.label, $0.window) }
     )
     let primaryLabel = "5h"
-    let secondaryLabel = "1w"
+    let secondaryLabel = "7d"
     let primaryWindow = windowsByLabel[primaryLabel]
     let secondaryWindow = windowsByLabel[secondaryLabel]
 

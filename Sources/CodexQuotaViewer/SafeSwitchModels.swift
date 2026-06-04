@@ -93,6 +93,11 @@ struct ProviderProfile: Equatable, Identifiable {
     }
 }
 
+enum ProviderProfileDisplayNamePreference {
+    case snapshotAccountEmail
+    case fallbackDisplayName
+}
+
 func buildProviderProfile(
     id: String,
     fallbackDisplayName: String,
@@ -105,18 +110,19 @@ func buildProviderProfile(
     isCurrent: Bool,
     managedFileURLs: [URL] = [],
     lastUsedAt: Date? = nil,
-    quotaFetchedAt: Date? = nil
+    quotaFetchedAt: Date? = nil,
+    displayNamePreference: ProviderProfileDisplayNamePreference = .snapshotAccountEmail
 ) -> ProviderProfile {
     let canonicalRuntimeMaterial = canonicalRuntimeMaterialForStorage(runtimeMaterial)
     let summary = parseRuntimeConfig(canonicalRuntimeMaterial.configData)
     let inferredAuthMode = snapshot?.account.type == "apiKey"
         ? CodexAuthMode.apiKey
         : resolveAuthMode(authData: canonicalRuntimeMaterial.authData)
-    let preferredName = snapshot?.account.email?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    let displayName = preferredName?.isEmpty == false
-        ? preferredName!
-        : fallbackDisplayName
+    let displayName = providerProfileDisplayName(
+        fallbackDisplayName: fallbackDisplayName,
+        snapshot: snapshot,
+        preference: displayNamePreference
+    )
 
     return ProviderProfile(
         id: id,
@@ -138,6 +144,33 @@ func buildProviderProfile(
         lastUsedAt: lastUsedAt,
         quotaFetchedAt: quotaFetchedAt
     )
+}
+
+private func providerProfileDisplayName(
+    fallbackDisplayName: String,
+    snapshot: CodexSnapshot?,
+    preference: ProviderProfileDisplayNamePreference
+) -> String {
+    let fallbackName = fallbackDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let snapshotName = snapshot?.account.email?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    switch preference {
+    case .fallbackDisplayName:
+        if !fallbackName.isEmpty {
+            return fallbackName
+        }
+        if let snapshotName, !snapshotName.isEmpty {
+            return snapshotName
+        }
+        return fallbackDisplayName
+
+    case .snapshotAccountEmail:
+        if let snapshotName, !snapshotName.isEmpty {
+            return snapshotName
+        }
+        return fallbackName.isEmpty ? fallbackDisplayName : fallbackName
+    }
 }
 
 struct ProviderCount: Equatable {

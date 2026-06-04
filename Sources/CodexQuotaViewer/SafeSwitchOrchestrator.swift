@@ -14,13 +14,39 @@ struct SwitchOperationPreview: Equatable {
     let filesToBackup: [URL]
     let rolloutFilesToUpdate: [URL]
     let codexWasRunning: Bool
+    let remote: RemoteSwitchPreview?
+}
+
+enum SwitchBackupStrategy: Equatable {
+    case createRestorePoint
+    case directWithoutBackup
+}
+
+struct RemoteSwitchPreview: Equatable {
+    let sshTargets: [String]
+    let codexHomePath: String
+
+    init(sshTarget: String, codexHomePath: String) {
+        self.sshTargets = [sshTarget]
+        self.codexHomePath = codexHomePath
+    }
+
+    init(sshTargets: [String], codexHomePath: String) {
+        self.sshTargets = sshTargets
+        self.codexHomePath = codexHomePath
+    }
+
+    var sshTarget: String {
+        sshTargets.joined(separator: ", ")
+    }
 }
 
 struct SwitchOperationResult: Equatable {
     let targetProfileID: String
-    let restorePoint: RestorePointManifest
+    let restorePoint: RestorePointManifest?
     let updatedRolloutCount: Int
     let repairSummary: OfficialRepairSummary
+    let remoteResult: RemoteSwitchResult?
 }
 
 struct RepairOperationResult: Equatable {
@@ -62,6 +88,7 @@ final class SwitchOrchestrator {
     private let repairClient: OfficialThreadRepairing
     private let desktopController: CodexDesktopControlling
     private let quotaChannelInvalidator: CodexRPCChannelInvalidating
+    private let remoteSwitchClient: RemoteSwitching
 
     init(
         store: ProfileStore,
@@ -69,7 +96,8 @@ final class SwitchOrchestrator {
         rolloutSynchronizer: RolloutProviderSynchronizer,
         repairClient: OfficialThreadRepairing,
         desktopController: CodexDesktopControlling,
-        quotaChannelInvalidator: CodexRPCChannelInvalidating
+        quotaChannelInvalidator: CodexRPCChannelInvalidating,
+        remoteSwitchClient: RemoteSwitching = SSHRemoteSwitchClient()
     ) {
         self.store = store
         self.backupManager = backupManager
@@ -77,9 +105,13 @@ final class SwitchOrchestrator {
         self.repairClient = repairClient
         self.desktopController = desktopController
         self.quotaChannelInvalidator = quotaChannelInvalidator
+        self.remoteSwitchClient = remoteSwitchClient
     }
 
-    func preview(targetProfile: ProviderProfile) throws -> SwitchOperationPreview {
+    func preview(
+        targetProfile: ProviderProfile,
+        remoteSettings: RemoteSwitchSettings = RemoteSwitchSettings()
+    ) throws -> SwitchOperationPreview {
         let effectiveConfig = try effectiveTargetConfigData(for: targetProfile)
         let targetProviderID = try resolveTargetProviderID(
             for: targetProfile,
@@ -100,28 +132,65 @@ final class SwitchOrchestrator {
             targetProviderID: targetProviderID,
             filesToBackup: filesToBackup,
             rolloutFilesToUpdate: rolloutFilesToUpdate,
-            codexWasRunning: desktopController.isRunning
+            codexWasRunning: desktopController.isRunning,
+            remote: remoteSettings.shouldSyncRemote
+                ? RemoteSwitchPreview(
+                    sshTargets: remoteSettings.trimmedSSHTargets,
+                    codexHomePath: remoteSettings.effectiveCodexHomePath
+                )
+                : nil
         )
     }
 
-    func perform(targetProfile: ProviderProfile) async throws -> SwitchOperationResult {
+    func perform(
+        targetProfile: ProviderProfile,
+        remoteSettings: RemoteSwitchSettings = RemoteSwitchSettings(),
+        backupStrategy: SwitchBackupStrategy = .createRestorePoint
+    ) async throws -> SwitchOperationResult {
         let previouslyRunning = try await desktopController.closeIfRunning()
         var restorePoint: RestorePointManifest?
+        var remoteDidSwitch = false
 
         do {
-            let latestPreview = try preview(targetProfile: targetProfile)
-            let createdRestorePoint = try backupManager.createRestorePoint(
-                reason: "safe-switch",
-                summary: "Switch to \(targetProfile.displayName)",
-                files: latestPreview.filesToBackup,
-                codexWasRunning: previouslyRunning
+            let latestPreview = try preview(
+                targetProfile: targetProfile,
+                remoteSettings: remoteSettings
             )
-            restorePoint = createdRestorePoint
-            let writer = ProtectedFileMutationContext(restorePoint: createdRestorePoint)
+            let writer: FileDataWriting
+            switch backupStrategy {
+            case .createRestorePoint:
+                let createdRestorePoint = try backupManager.createRestorePoint(
+                    reason: "safe-switch",
+                    summary: "Switch to \(targetProfile.displayName)",
+                    files: latestPreview.filesToBackup,
+                    codexWasRunning: previouslyRunning
+                )
+                restorePoint = createdRestorePoint
+                writer = ProtectedFileMutationContext(restorePoint: createdRestorePoint)
+            case .directWithoutBackup:
+                writer = DirectFileDataWriter()
+            }
+
+            let targetConfig = try effectiveTargetConfigData(for: targetProfile)
             let mergedConfig = try mergeRuntimeConfig(
                 currentConfigData: try store.currentConfigData(),
-                targetConfigData: try effectiveTargetConfigData(for: targetProfile)
+                targetConfigData: targetConfig
             )
+            let remoteResult: RemoteSwitchResult?
+            if remoteSettings.shouldSyncRemote {
+                remoteResult = try await remoteSwitchClient.perform(
+                    RemoteSwitchOperation(
+                        settings: remoteSettings,
+                        restorePointID: restorePoint?.id,
+                        authData: targetProfile.runtimeMaterial.authData,
+                        targetConfigData: targetConfig,
+                        targetProviderID: latestPreview.targetProviderID
+                    )
+                )
+                remoteDidSwitch = true
+            } else {
+                remoteResult = nil
+            }
 
             try writer.write(targetProfile.runtimeMaterial.authData, to: store.currentAuthURL)
             try writer.write(mergedConfig, to: store.currentConfigURL)
@@ -137,11 +206,19 @@ final class SwitchOrchestrator {
 
             return SwitchOperationResult(
                 targetProfileID: targetProfile.id,
-                restorePoint: createdRestorePoint,
+                restorePoint: restorePoint,
                 updatedRolloutCount: rolloutResult.updatedFiles.count,
-                repairSummary: repairSummary
+                repairSummary: repairSummary,
+                remoteResult: remoteResult
             )
         } catch {
+            if remoteDidSwitch,
+               let restorePoint {
+                try? await remoteSwitchClient.rollback(
+                    settings: remoteSettings,
+                    restorePointID: restorePoint.id
+                )
+            }
             if let restorePoint {
                 do {
                     try backupManager.restoreRestorePoint(restorePoint)
@@ -188,7 +265,7 @@ final class SwitchOrchestrator {
         }
     }
 
-    private func effectiveTargetConfigData(for targetProfile: ProviderProfile) throws -> Data? {
+    private func effectiveTargetConfigData(for targetProfile: ProviderProfile) throws -> Data {
         if let configData = targetProfile.runtimeMaterial.configData,
            let raw = String(data: configData, encoding: .utf8),
            !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

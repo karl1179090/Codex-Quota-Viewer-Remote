@@ -2,7 +2,11 @@ English | [中文](README.zh-CN.md)
 
 # Codex Quota Viewer
 
-> Stable release: `1.3.1`
+> Stable release: `1.3.2`
+>
+> 1.3.2 hotfix:
+> - Fixes the Settings Accounts pane blank-content regression after account switching by keeping the page and account list scroll area sized to the visible content region.
+> - Keeps saved account actions visible with a deterministic account-list layout and adds coverage for the zero-height scroll area regression.
 >
 > 1.3.1 hotfix:
 > - Fixes Settings account rows so switch, rename, and remove actions stay visible after account-list layout refreshes.

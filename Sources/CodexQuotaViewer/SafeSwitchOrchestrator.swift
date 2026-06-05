@@ -145,7 +145,8 @@ final class SwitchOrchestrator {
     func perform(
         targetProfile: ProviderProfile,
         remoteSettings: RemoteSwitchSettings = RemoteSwitchSettings(),
-        backupStrategy: SwitchBackupStrategy = .createRestorePoint
+        backupStrategy: SwitchBackupStrategy = .createRestorePoint,
+        terminateRemoteCodexProcesses: Bool = false
     ) async throws -> SwitchOperationResult {
         let previouslyRunning = try await desktopController.closeIfRunning()
         var restorePoint: RestorePointManifest?
@@ -184,7 +185,8 @@ final class SwitchOrchestrator {
                         restorePointID: restorePoint?.id,
                         authData: targetProfile.runtimeMaterial.authData,
                         targetConfigData: targetConfig,
-                        targetProviderID: latestPreview.targetProviderID
+                        targetProviderID: latestPreview.targetProviderID,
+                        terminateRemoteCodexProcesses: terminateRemoteCodexProcesses
                     )
                 )
                 remoteDidSwitch = true

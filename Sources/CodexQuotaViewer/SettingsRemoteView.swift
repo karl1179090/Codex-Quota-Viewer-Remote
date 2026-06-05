@@ -58,8 +58,8 @@ final class SettingsRemoteView: NSView {
         remotePathTitleLabel.stringValue = AppLocalization.localized(en: "Remote Codex home", zh: "远程 Codex 目录")
         remotePathField.placeholderString = RemoteSwitchSettings.defaultCodexHomePath
         hintLabel.stringValue = AppLocalization.localized(
-            en: "Reads Host entries from ~/.ssh/config and uses system ssh to connect to remote machines. Remote Codex processes are not stopped.",
-            zh: "读取 ~/.ssh/config 里的 Host，并使用系统 ssh 连接远程机器。不会停止远程 Codex 进程。"
+            en: "Reads Host entries from ~/.ssh/config and uses system ssh to connect to remote machines. Remote Codex processes can be terminated from the switch confirmation.",
+            zh: "读取 ~/.ssh/config 里的 Host，并使用系统 ssh 连接远程机器。可在切换确认框中选择是否终止远端 Codex 进程。"
         )
         remoteSyncSwitch.setAccessibilityLabel(syncLabel.stringValue)
         searchField.setAccessibilityLabel(searchField.placeholderString)

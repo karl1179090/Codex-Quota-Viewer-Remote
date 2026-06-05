@@ -12,6 +12,11 @@ struct MenuNotice: Equatable {
     let message: String
 }
 
+private struct SafeSwitchConfirmation: Equatable {
+    let backupStrategy: SwitchBackupStrategy
+    let terminateRemoteCodexProcesses: Bool
+}
+
 enum ProfileIndicatorKind: Equatable {
     case error
     case neutral
@@ -774,7 +779,7 @@ final class AppController: NSObject, NSMenuDelegate {
     private func confirmSafeSwitch(
         targetProfile: ProviderProfile,
         preview: SwitchOperationPreview
-    ) -> SwitchBackupStrategy? {
+    ) -> SafeSwitchConfirmation? {
         foregroundPresentationController.runModal {
             let alert = NSAlert()
             alert.messageText = AppLocalization.localized(
@@ -792,8 +797,8 @@ final class AppController: NSObject, NSMenuDelegate {
                 AppLocalization.localized(en: "Rollouts to update: \(preview.rolloutFilesToUpdate.count)", zh: "需更新 rollout：\(preview.rolloutFilesToUpdate.count)"),
                 preview.remote.map {
                     AppLocalization.localized(
-                        en: "Remote sync: \($0.sshTarget) \($0.codexHomePath). Remote Codex processes are not stopped.",
-                        zh: "远端同步：\($0.sshTarget) \($0.codexHomePath)。不会停止远端 Codex 进程。"
+                        en: "Remote sync: \($0.sshTarget) \($0.codexHomePath). You can terminate remote Codex processes below.",
+                        zh: "远端同步：\($0.sshTarget) \($0.codexHomePath)。可在下方选择是否终止远端 Codex 进程。"
                     )
                 },
                 preview.codexWasRunning
@@ -804,14 +809,39 @@ final class AppController: NSObject, NSMenuDelegate {
                     zh: "直接切换会跳过本地和远端备份，不会创建还原点。"
                 ),
             ].compactMap { $0 }.joined(separator: "\n")
+            let terminateRemoteCodexCheckbox: NSButton?
+            if preview.remote != nil {
+                let checkbox = NSButton(
+                    checkboxWithTitle: AppLocalization.localized(
+                        en: "Terminate all remote Codex processes for the SSH login user",
+                        zh: "终止远端 SSH 登录用户下的全部 Codex 进程"
+                    ),
+                    target: nil,
+                    action: nil
+                )
+                checkbox.state = .off
+                checkbox.setAccessibilityLabel(checkbox.title)
+                alert.accessoryView = checkbox
+                terminateRemoteCodexCheckbox = checkbox
+            } else {
+                terminateRemoteCodexCheckbox = nil
+            }
             alert.addButton(withTitle: AppLocalization.localized(en: "Switch Safely", zh: "安全切换"))
             alert.addButton(withTitle: AppLocalization.localized(en: "Direct Switch (No Backup)", zh: "直接切换（不备份）"))
             alert.addButton(withTitle: AppLocalization.localized(en: "Cancel", zh: "取消"))
-            switch alert.runModal() {
+            let response = alert.runModal()
+            let terminateRemoteCodexProcesses = terminateRemoteCodexCheckbox?.state == .on
+            switch response {
             case .alertFirstButtonReturn:
-                return .createRestorePoint
+                return SafeSwitchConfirmation(
+                    backupStrategy: .createRestorePoint,
+                    terminateRemoteCodexProcesses: terminateRemoteCodexProcesses
+                )
             case .alertSecondButtonReturn:
-                return .directWithoutBackup
+                return SafeSwitchConfirmation(
+                    backupStrategy: .directWithoutBackup,
+                    terminateRemoteCodexProcesses: terminateRemoteCodexProcesses
+                )
             default:
                 return nil
             }
@@ -860,13 +890,19 @@ final class AppController: NSObject, NSMenuDelegate {
             en: " Remote synced to \(remote.sshTarget); updated \(remote.updatedRolloutCount) remote rollout(s).",
             zh: " 已同步远端 \(remote.sshTarget)，更新 \(remote.updatedRolloutCount) 个远端 rollout。"
         )
+        let remoteTerminationText = remote.terminatedCodexProcessCount > 0
+            ? AppLocalization.localized(
+                en: " Terminated \(remote.terminatedCodexProcessCount) remote Codex process(es).",
+                zh: " 已终止 \(remote.terminatedCodexProcessCount) 个远端 Codex 进程。"
+            )
+            : ""
         let warningText = remote.warningCount > 0
             ? AppLocalization.localized(
                 en: " \(remote.warningCount) remote warning(s).",
                 zh: " 远端有 \(remote.warningCount) 个警告。"
             )
             : ""
-        return base + remoteText + warningText
+        return base + remoteText + remoteTerminationText + warningText
     }
 
     private func confirmEnterChatGPTProviderMode(record: VaultAccountRecord) -> Bool {
@@ -1312,22 +1348,34 @@ final class AppController: NSObject, NSMenuDelegate {
             return
         }
 
-        guard let backupStrategy = confirmSafeSwitch(targetProfile: targetProfile, preview: preview) else {
+        guard let confirmation = confirmSafeSwitch(targetProfile: targetProfile, preview: preview) else {
             endForegroundOperation(.safeSwitch)
             return
         }
+        let backupStrategy = confirmation.backupStrategy
+        let terminateRemoteCodexProcesses = confirmation.terminateRemoteCodexProcesses
 
         let switchingMessage = switch backupStrategy {
         case .createRestorePoint:
-            AppLocalization.localized(
-                en: "Switching to \(targetProfile.displayName)…",
-                zh: "正在切换到 \(targetProfile.displayName)…"
-            )
+            terminateRemoteCodexProcesses
+                ? AppLocalization.localized(
+                    en: "Terminating remote Codex processes and switching to \(targetProfile.displayName)…",
+                    zh: "正在终止远端 Codex 进程并切换到 \(targetProfile.displayName)…"
+                )
+                : AppLocalization.localized(
+                    en: "Switching to \(targetProfile.displayName)…",
+                    zh: "正在切换到 \(targetProfile.displayName)…"
+                )
         case .directWithoutBackup:
-            AppLocalization.localized(
-                en: "Switching directly to \(targetProfile.displayName) without backup…",
-                zh: "正在不备份直接切换到 \(targetProfile.displayName)…"
-            )
+            terminateRemoteCodexProcesses
+                ? AppLocalization.localized(
+                    en: "Terminating remote Codex processes and switching directly to \(targetProfile.displayName) without backup…",
+                    zh: "正在终止远端 Codex 进程，并不备份直接切换到 \(targetProfile.displayName)…"
+                )
+                : AppLocalization.localized(
+                    en: "Switching directly to \(targetProfile.displayName) without backup…",
+                    zh: "正在不备份直接切换到 \(targetProfile.displayName)…"
+                )
         }
 
         presentSafeSwitchNotice(
@@ -1346,7 +1394,8 @@ final class AppController: NSObject, NSMenuDelegate {
                 let result = try await self.switchOrchestrator.perform(
                     targetProfile: targetProfile,
                     remoteSettings: self.settings.remoteSwitch,
-                    backupStrategy: backupStrategy
+                    backupStrategy: backupStrategy,
+                    terminateRemoteCodexProcesses: terminateRemoteCodexProcesses
                 )
                 if targetProfile.source == .vault {
                     let writer: FileDataWriting

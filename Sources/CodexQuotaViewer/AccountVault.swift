@@ -37,6 +37,7 @@ enum VaultAccountSource: String, Codable, Equatable {
 struct VaultAccountMetadata: Codable, Equatable, Identifiable {
     let id: String
     var displayName: String
+    var isDisplayNameUserEdited: Bool
     let authMode: CodexAuthMode
     let providerID: String?
     let baseURL: String?
@@ -49,6 +50,7 @@ struct VaultAccountMetadata: Codable, Equatable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id
         case displayName
+        case isDisplayNameUserEdited
         case authMode
         case providerID
         case baseURL
@@ -63,6 +65,7 @@ struct VaultAccountMetadata: Codable, Equatable, Identifiable {
     init(
         id: String,
         displayName: String,
+        isDisplayNameUserEdited: Bool = false,
         authMode: CodexAuthMode,
         providerID: String?,
         baseURL: String?,
@@ -74,6 +77,7 @@ struct VaultAccountMetadata: Codable, Equatable, Identifiable {
     ) {
         self.id = id
         self.displayName = displayName
+        self.isDisplayNameUserEdited = isDisplayNameUserEdited
         self.authMode = authMode
         self.providerID = providerID
         self.baseURL = baseURL
@@ -88,6 +92,7 @@ struct VaultAccountMetadata: Codable, Equatable, Identifiable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         displayName = try container.decode(String.self, forKey: .displayName)
+        isDisplayNameUserEdited = try container.decodeIfPresent(Bool.self, forKey: .isDisplayNameUserEdited) ?? false
         authMode = try container.decode(CodexAuthMode.self, forKey: .authMode)
         providerID = try container.decodeIfPresent(String.self, forKey: .providerID)
         baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL)
@@ -104,6 +109,9 @@ struct VaultAccountMetadata: Codable, Equatable, Identifiable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(displayName, forKey: .displayName)
+        if isDisplayNameUserEdited {
+            try container.encode(isDisplayNameUserEdited, forKey: .isDisplayNameUserEdited)
+        }
         try container.encode(authMode, forKey: .authMode)
         try container.encodeIfPresent(providerID, forKey: .providerID)
         try container.encodeIfPresent(baseURL, forKey: .baseURL)
@@ -403,6 +411,7 @@ final class VaultAccountStore {
             metadata: {
                 var metadata = existing.metadata
                 metadata.displayName = newDisplayName
+                metadata.isDisplayNameUserEdited = true
                 return metadata
             }(),
             runtimeMaterial: existing.runtimeMaterial
@@ -584,6 +593,7 @@ final class VaultAccountStore {
         let trimmedFallback = fallbackDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let mergedDisplayName = shouldReplaceDisplayName(
             existing.metadata.displayName,
+            isExistingUserEdited: existing.metadata.isDisplayNameUserEdited,
             existingSource: existing.metadata.source,
             with: trimmedFallback,
             candidateSource: source
@@ -597,6 +607,7 @@ final class VaultAccountStore {
         let metadata = VaultAccountMetadata(
             id: existing.metadata.id,
             displayName: mergedDisplayName,
+            isDisplayNameUserEdited: existing.metadata.isDisplayNameUserEdited,
             authMode: resolvedStoredAuthMode(for: runtimeMaterial),
             providerID: summary.providerID,
             baseURL: summary.baseURL,
@@ -617,11 +628,14 @@ final class VaultAccountStore {
         let summary = parseRuntimeConfig(preferred.normalizedRuntime.configData)
         let mergedCreatedAt = candidates.map { $0.original.metadata.createdAt }.min() ?? preferred.original.metadata.createdAt
         let mergedLastUsedAt = candidates.compactMap { $0.original.metadata.lastUsedAt }.max()
-        let mergedDisplayName = preferredDisplayName(from: candidates) ?? preferred.original.metadata.displayName
+        let preferredDisplayMetadata = preferredDisplayNameMetadata(from: candidates)
+        let mergedDisplayName = preferredDisplayMetadata?.displayName ?? preferred.original.metadata.displayName
 
         let metadata = VaultAccountMetadata(
             id: targetID,
             displayName: mergedDisplayName,
+            isDisplayNameUserEdited: preferredDisplayMetadata?.isDisplayNameUserEdited
+                ?? preferred.original.metadata.isDisplayNameUserEdited,
             authMode: resolvedStoredAuthMode(for: preferred.normalizedRuntime),
             providerID: summary.providerID,
             baseURL: summary.baseURL,
@@ -659,15 +673,18 @@ final class VaultAccountStore {
         return lhs.original.metadata.createdAt > rhs.original.metadata.createdAt
     }
 
-    private func preferredDisplayName(from candidates: [NormalizationCandidate]) -> String? {
+    private func preferredDisplayNameMetadata(from candidates: [NormalizationCandidate]) -> VaultAccountMetadata? {
         candidates
             .map(\.original.metadata)
             .sorted(by: displayNameMetadataComparator)
-            .map(\.displayName)
-            .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .first { !$0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     private func displayNameMetadataComparator(lhs: VaultAccountMetadata, rhs: VaultAccountMetadata) -> Bool {
+        if lhs.isDisplayNameUserEdited != rhs.isDisplayNameUserEdited {
+            return lhs.isDisplayNameUserEdited
+        }
+
         let lhsScore = displayNameSpecificityScore(lhs.displayName, source: lhs.source)
         let rhsScore = displayNameSpecificityScore(rhs.displayName, source: rhs.source)
         if lhsScore != rhsScore {
@@ -723,10 +740,15 @@ final class VaultAccountStore {
 
     private func shouldReplaceDisplayName(
         _ existing: String,
+        isExistingUserEdited: Bool,
         existingSource: VaultAccountSource,
         with candidate: String,
         candidateSource: VaultAccountSource
     ) -> Bool {
+        if isExistingUserEdited {
+            return false
+        }
+
         guard !candidate.isEmpty else {
             return false
         }

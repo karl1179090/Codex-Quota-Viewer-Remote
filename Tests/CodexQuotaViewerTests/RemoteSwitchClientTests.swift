@@ -51,6 +51,7 @@ func sshRemoteSwitchClientBuildsSSHInvocationAndPayloadScript() async throws {
 
     #expect(result.updatedRolloutCount == 3)
     #expect(result.warningCount == 1)
+    #expect(result.terminatedCodexProcessCount == 0)
     #expect(executor.calls.count == 1)
     #expect(executor.calls[0].executableURL.path == "/mock/ssh")
     #expect(executor.calls[0].arguments == ["codex-box", "sh", "-s"])
@@ -60,11 +61,52 @@ func sshRemoteSwitchClientBuildsSSHInvocationAndPayloadScript() async throws {
     #expect(script.contains("AUTH_B64='eyJhdXRoX21vZGUiOiJjaGF0Z3B0In0='"))
     #expect(script.contains("TARGET_CONFIG_B64='bW9kZWxfcHJvdmlkZXIgPSAib3BlbmFpIgo='"))
     #expect(script.contains("PROVIDER_B64='b3BlbmFp'"))
+    #expect(script.contains("REMOTE_CODEX_KILL_ENABLED=0"))
     #expect(script.contains("merged_config = merge_runtime_config(current_config, target_config)"))
     #expect(script.contains("remote-switch-backups/$RESTORE_ID"))
     #expect(script.contains("updated_rollouts=${UPDATED_ROLLOUTS:-0}"))
+    #expect(script.contains("terminated_codex_processes=${TERMINATED_REMOTE_CODEX:-0}"))
     #expect(script.contains("restore_manifest()"))
     #expect(script.contains("(backup_root / \"manifest.json\").write_text"))
+}
+
+@Test
+func sshRemoteSwitchClientCanTerminateRemoteCodexProcessesWhenRequested() async throws {
+    let executor = RemoteProcessExecutorSpy(
+        result: ProcessExecutionResult(
+            terminationStatus: 0,
+            standardOutput: Data("REMOTE_SWITCH_SUMMARY updated_rollouts=0 warnings=0 terminated_codex_processes=4\n".utf8),
+            standardError: Data()
+        )
+    )
+    let client = SSHRemoteSwitchClient(
+        executor: executor,
+        sshURL: URL(fileURLWithPath: "/mock/ssh")
+    )
+
+    let result = try await client.perform(
+        RemoteSwitchOperation(
+            settings: RemoteSwitchSettings(
+                enabled: true,
+                sshTarget: "codex-box",
+                codexHomePath: "~/.codex"
+            ),
+            restorePointID: "restore-kill",
+            authData: Data(#"{"auth_mode":"chatgpt"}"#.utf8),
+            targetConfigData: Data("model_provider = \"openai\"\n".utf8),
+            targetProviderID: "openai",
+            terminateRemoteCodexProcesses: true
+        )
+    )
+
+    #expect(result.terminatedCodexProcessCount == 4)
+    let script = try executor.calls[0].standardInput.utf8String()
+    #expect(script.contains("REMOTE_CODEX_KILL_ENABLED=1"))
+    #expect(script.contains("[\"ps\", \"-eo\", \"pid=\", \"-o\", \"ppid=\", \"-o\", \"uid=\", \"-o\", \"comm=\", \"-o\", \"args=\"]"))
+    #expect(script.contains("command_has_codex_token(process[\"args\"])"))
+    #expect(script.contains("parent_comm in {\"node\", \"nodejs\"}"))
+    #expect(script.contains("kill $REMOTE_CODEX_PIDS"))
+    #expect(script.contains("kill -KILL $REMOTE_CODEX_STILL_RUNNING"))
 }
 
 @Test
@@ -100,6 +142,7 @@ func sshRemoteSwitchClientSynchronizesMultipleTargets() async throws {
     #expect(result.sshTarget == "codex-box, prod-box")
     #expect(result.updatedRolloutCount == 6)
     #expect(result.warningCount == 2)
+    #expect(result.terminatedCodexProcessCount == 0)
     #expect(calls.map(\.arguments).sorted { $0[0] < $1[0] } == [
         ["codex-box", "sh", "-s"],
         ["prod-box", "sh", "-s"],

@@ -205,6 +205,47 @@ func vaultAccountStoreUsesStableChatGPTIdentityAcrossRefreshAndConfigDifferences
 }
 
 @Test
+func vaultAccountStorePreservesRenamedDisplayNameAcrossRuntimeRefresh() throws {
+    let harness = try makeHarness()
+    let vault = makeVaultStore(harness)
+    let originalRuntime = ProfileRuntimeMaterial(
+        authData: Data(
+            """
+            {"auth_mode":"chatgpt","last_refresh":"2026-03-30T02:33:21.958042Z","tokens":{"access_token":"token-1","refresh_token":"refresh-1","account_id":"acct-rename"}}
+            """.utf8
+        ),
+        configData: Data("model_provider = \"openai\"\n".utf8)
+    )
+    let refreshedRuntime = ProfileRuntimeMaterial(
+        authData: Data(
+            """
+            {"auth_mode":"chatgpt","last_refresh":"2026-03-31T01:45:41.950247Z","tokens":{"access_token":"token-2","refresh_token":"refresh-2","account_id":"acct-rename"}}
+            """.utf8
+        ),
+        configData: Data("model_provider = \"openai\"\nmodel = \"gpt-5.4\"\n".utf8)
+    )
+
+    let inserted = try vault.upsertAccount(
+        fallbackDisplayName: "original@example.com",
+        source: .manualChatGPT,
+        runtimeMaterial: originalRuntime
+    )
+    _ = try vault.renameAccount(id: inserted.record.id, newDisplayName: "Work Main")
+    let refreshed = try vault.upsertAccount(
+        fallbackDisplayName: "original@example.com",
+        source: .currentRuntime,
+        runtimeMaterial: refreshedRuntime
+    )
+    let snapshot = try vault.loadSnapshot()
+
+    #expect(refreshed.inserted == false)
+    #expect(refreshed.updated)
+    #expect(snapshot.accounts.count == 1)
+    #expect(snapshot.accounts.first?.metadata.displayName == "Work Main")
+    #expect(snapshot.accounts.first?.metadata.isDisplayNameUserEdited == true)
+}
+
+@Test
 func vaultNormalizationPlanMergesLegacyAndCurrentRuntimeDuplicates() throws {
     let harness = try makeHarness()
     let vault = makeVaultStore(harness)
@@ -236,6 +277,41 @@ func vaultNormalizationPlanMergesLegacyAndCurrentRuntimeDuplicates() throws {
     #expect(snapshot.accounts.first?.id == vault.accountID(for: fixture.currentRuntime))
     #expect(snapshot.accounts.first?.metadata.displayName == "Krisxu9@gmail.com")
     #expect(snapshot.accounts.first?.runtimeMaterial.configData.flatMap { try? $0.utf8String() } == "model_provider = \"openai\"\nmodel = \"gpt-5.4\"\n")
+}
+
+@Test
+func vaultNormalizationPlanPreservesRenamedDisplayNameWhenMergingDuplicates() throws {
+    let harness = try makeHarness()
+    let vault = makeVaultStore(harness)
+    let fixture = makeChatGPTNormalizationFixture()
+
+    let accountsRoot = vault.accountsRootURL
+    try FileManager.default.createDirectory(at: accountsRoot, withIntermediateDirectories: true)
+
+    var renamedMetadata = fixture.legacyMetadata
+    renamedMetadata.displayName = "Work Main"
+    renamedMetadata.isDisplayNameUserEdited = true
+    try writeTestVaultRecord(
+        root: accountsRoot,
+        metadata: renamedMetadata,
+        runtime: fixture.legacyRuntime,
+        encoder: fixture.encoder
+    )
+    try writeTestVaultRecord(
+        root: accountsRoot,
+        metadata: fixture.currentMetadata,
+        runtime: fixture.currentRuntime,
+        encoder: fixture.encoder
+    )
+    try fixture.encoder.encode([renamedMetadata, fixture.currentMetadata]).write(to: vault.indexURL)
+
+    let plan = try #require(try vault.normalizationPlan())
+    try vault.applyNormalizationPlan(plan)
+
+    let snapshot = try vault.loadSnapshot()
+    #expect(snapshot.accounts.count == 1)
+    #expect(snapshot.accounts.first?.metadata.displayName == "Work Main")
+    #expect(snapshot.accounts.first?.metadata.isDisplayNameUserEdited == true)
 }
 
 @Test

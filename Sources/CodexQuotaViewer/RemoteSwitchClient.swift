@@ -6,6 +6,23 @@ struct RemoteSwitchOperation: Equatable, Sendable {
     let authData: Data
     let targetConfigData: Data
     let targetProviderID: String
+    let terminateRemoteCodexProcesses: Bool
+
+    init(
+        settings: RemoteSwitchSettings,
+        restorePointID: String?,
+        authData: Data,
+        targetConfigData: Data,
+        targetProviderID: String,
+        terminateRemoteCodexProcesses: Bool = false
+    ) {
+        self.settings = settings
+        self.restorePointID = restorePointID
+        self.authData = authData
+        self.targetConfigData = targetConfigData
+        self.targetProviderID = targetProviderID
+        self.terminateRemoteCodexProcesses = terminateRemoteCodexProcesses
+    }
 }
 
 struct RemoteSwitchTargetResult: Equatable, Sendable {
@@ -13,6 +30,7 @@ struct RemoteSwitchTargetResult: Equatable, Sendable {
     let codexHomePath: String
     let updatedRolloutCount: Int
     let warningCount: Int
+    let terminatedCodexProcessCount: Int
 }
 
 struct RemoteSwitchResult: Equatable, Sendable {
@@ -26,14 +44,16 @@ struct RemoteSwitchResult: Equatable, Sendable {
         sshTarget: String,
         codexHomePath: String,
         updatedRolloutCount: Int,
-        warningCount: Int
+        warningCount: Int,
+        terminatedCodexProcessCount: Int = 0
     ) {
         targets = [
             RemoteSwitchTargetResult(
                 sshTarget: sshTarget,
                 codexHomePath: codexHomePath,
                 updatedRolloutCount: updatedRolloutCount,
-                warningCount: warningCount
+                warningCount: warningCount,
+                terminatedCodexProcessCount: terminatedCodexProcessCount
             ),
         ]
     }
@@ -52,6 +72,10 @@ struct RemoteSwitchResult: Equatable, Sendable {
 
     var warningCount: Int {
         targets.reduce(0) { $0 + $1.warningCount }
+    }
+
+    var terminatedCodexProcessCount: Int {
+        targets.reduce(0) { $0 + $1.terminatedCodexProcessCount }
     }
 }
 
@@ -221,7 +245,8 @@ final class SSHRemoteSwitchClient: RemoteSwitching, Sendable {
         let script = remotePerformScript(
             codexHomePath: operation.settings.effectiveCodexHomePath,
             restorePointID: operation.restorePointID,
-            payload: payload
+            payload: payload,
+            terminateRemoteCodexProcesses: operation.terminateRemoteCodexProcesses
         )
         let outcomes = await runPerform(targets: targets, script: script, codexHomePath: operation.settings.effectiveCodexHomePath)
         let failed = outcomes.first { $0.error != nil }
@@ -265,7 +290,8 @@ final class SSHRemoteSwitchClient: RemoteSwitching, Sendable {
                                 sshTarget: target,
                                 codexHomePath: codexHomePath,
                                 updatedRolloutCount: summary.updatedRollouts,
-                                warningCount: summary.warnings
+                                warningCount: summary.warnings,
+                                terminatedCodexProcessCount: summary.terminatedCodexProcesses
                             ),
                             error: nil
                         )
@@ -334,7 +360,8 @@ final class SSHRemoteSwitchClient: RemoteSwitching, Sendable {
         let values = Dictionary(uniqueKeysWithValues: parts)
         return RemoteScriptSummary(
             updatedRollouts: values["updated_rollouts"] ?? 0,
-            warnings: values["warnings"] ?? 0
+            warnings: values["warnings"] ?? 0,
+            terminatedCodexProcesses: values["terminated_codex_processes"] ?? 0
         )
     }
 }
@@ -342,6 +369,7 @@ final class SSHRemoteSwitchClient: RemoteSwitching, Sendable {
 private struct RemoteScriptSummary: Equatable {
     let updatedRollouts: Int
     let warnings: Int
+    let terminatedCodexProcesses: Int
 }
 
 private struct RemoteSwitchTargetOutcome: Sendable {
@@ -373,22 +401,129 @@ private func shellSingleQuote(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
 }
 
+private func remoteCodexPIDFinderScript() -> String {
+    """
+    import os, shlex, subprocess, sys
+
+    uid = os.getuid()
+    user = ""
+    try:
+        user = subprocess.check_output(["id", "-un"], text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        pass
+
+    excluded = {os.getpid(), os.getppid()}
+    for key in ("REMOTE_KILL_SHELL_PID", "REMOTE_KILL_PARENT_PID"):
+        try:
+            value = int(os.environ.get(key, "0"))
+            if value > 0:
+                excluded.add(value)
+        except ValueError:
+            pass
+
+    try:
+        output = subprocess.check_output(
+            ["ps", "-eo", "pid=", "-o", "ppid=", "-o", "uid=", "-o", "comm=", "-o", "args="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        sys.exit(0)
+
+    processes = {}
+    children = {}
+
+    def basename(value):
+        return os.path.basename(value.strip().strip("'").strip('"'))
+
+    def same_user(raw_uid):
+        try:
+            return int(raw_uid) == uid
+        except ValueError:
+            return bool(user) and raw_uid == user
+
+    def command_has_codex_token(args):
+        try:
+            tokens = shlex.split(args)
+        except ValueError:
+            tokens = args.split()
+        return any(basename(token) in {"codex", "codex.js"} for token in tokens)
+
+    for line in output.splitlines():
+        parts = line.strip().split(None, 4)
+        if len(parts) < 4:
+            continue
+        if len(parts) == 4:
+            pid_text, ppid_text, uid_text, comm = parts
+            args = comm
+        else:
+            pid_text, ppid_text, uid_text, comm, args = parts
+        try:
+            pid = int(pid_text)
+            ppid = int(ppid_text)
+        except ValueError:
+            continue
+        if pid in excluded or not same_user(uid_text):
+            continue
+        processes[pid] = {
+            "pid": pid,
+            "ppid": ppid,
+            "comm": comm,
+            "args": args,
+        }
+        children.setdefault(ppid, []).append(pid)
+
+    direct_matches = {
+        pid for pid, process in processes.items()
+        if basename(process["comm"]) == "codex" or command_has_codex_token(process["args"])
+    }
+    matched = set(direct_matches)
+
+    stack = list(direct_matches)
+    while stack:
+        parent_pid = stack.pop()
+        for child_pid in children.get(parent_pid, []):
+            if child_pid not in matched:
+                matched.add(child_pid)
+                stack.append(child_pid)
+
+    for pid in list(matched):
+        process = processes.get(pid)
+        if not process:
+            continue
+        parent = processes.get(process["ppid"])
+        if not parent:
+            continue
+        parent_comm = basename(parent["comm"])
+        if parent_comm in {"node", "nodejs"} or command_has_codex_token(parent["args"]):
+            matched.add(parent["pid"])
+
+    for pid in sorted(matched):
+        if pid not in excluded:
+            print(pid)
+    """
+}
+
 private func remotePerformScript(
     codexHomePath: String,
     restorePointID: String?,
-    payload: RemoteSwitchPayload
+    payload: RemoteSwitchPayload,
+    terminateRemoteCodexProcesses: Bool
 ) -> String {
     let quotedCodexHome = shellSingleQuote(codexHomePath)
     let quotedRestoreID = shellSingleQuote(restorePointID ?? "direct-no-backup")
     let backupEnabled = restorePointID == nil ? "0" : "1"
+    let remoteKillEnabled = terminateRemoteCodexProcesses ? "1" : "0"
     let quotedAuth = shellSingleQuote(payload.authBase64)
     let quotedTargetConfig = shellSingleQuote(payload.targetConfigBase64)
     let quotedProvider = shellSingleQuote(payload.providerBase64)
+    let quotedRemoteCodexPIDFinder = shellSingleQuote(remoteCodexPIDFinderScript())
     return """
     set -eu
     CODEX_HOME_INPUT=\(quotedCodexHome)
     RESTORE_ID=\(quotedRestoreID)
     BACKUP_ENABLED=\(backupEnabled)
+    REMOTE_CODEX_KILL_ENABLED=\(remoteKillEnabled)
     AUTH_B64=\(quotedAuth)
     TARGET_CONFIG_B64=\(quotedTargetConfig)
     PROVIDER_B64=\(quotedProvider)
@@ -411,6 +546,27 @@ private func remotePerformScript(
       mkdir -p "$CODEX_HOME" "$FILES_DIR"
     else
       mkdir -p "$CODEX_HOME"
+    fi
+    TERMINATED_REMOTE_CODEX=0
+    if [ "$REMOTE_CODEX_KILL_ENABLED" = "1" ]; then
+      REMOTE_KILL_SHELL_PID=$$
+      REMOTE_KILL_PARENT_PID=${PPID:-0}
+      export REMOTE_KILL_SHELL_PID REMOTE_KILL_PARENT_PID
+      REMOTE_CODEX_PIDS=$(python3 -c \(quotedRemoteCodexPIDFinder))
+      if [ -n "$REMOTE_CODEX_PIDS" ]; then
+        TERMINATED_REMOTE_CODEX=$(printf '%s\n' "$REMOTE_CODEX_PIDS" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+        kill $REMOTE_CODEX_PIDS 2>/dev/null || true
+        sleep 1
+        REMOTE_CODEX_STILL_RUNNING=""
+        for pid in $REMOTE_CODEX_PIDS; do
+          if kill -0 "$pid" 2>/dev/null; then
+            REMOTE_CODEX_STILL_RUNNING="$REMOTE_CODEX_STILL_RUNNING $pid"
+          fi
+        done
+        if [ -n "$REMOTE_CODEX_STILL_RUNNING" ]; then
+          kill -KILL $REMOTE_CODEX_STILL_RUNNING 2>/dev/null || true
+        fi
+      fi
     fi
     WARNINGS=0
     UPDATED_ROLLOUTS=0
@@ -631,7 +787,7 @@ private func remotePerformScript(
     PY
     . "$SUMMARY_FILE"
     rm -rf "$TMP_DIR"
-    echo "REMOTE_SWITCH_SUMMARY updated_rollouts=${UPDATED_ROLLOUTS:-0} warnings=${WARNINGS:-0}"
+    echo "REMOTE_SWITCH_SUMMARY updated_rollouts=${UPDATED_ROLLOUTS:-0} warnings=${WARNINGS:-0} terminated_codex_processes=${TERMINATED_REMOTE_CODEX:-0}"
     """
 }
 

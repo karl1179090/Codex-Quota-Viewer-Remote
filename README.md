@@ -2,7 +2,12 @@ English | [中文](README.zh-CN.md)
 
 # Codex Quota Viewer
 
-> Stable release: `1.3.2`
+> Stable release: `1.3.3`
+>
+> 1.3.3 update:
+> - Adds an account-switch confirmation option to terminate Codex processes on selected remote SSH hosts.
+> - Expands remote termination to cover Codex native processes, Node wrappers, and app-server proxy shell wrappers for the SSH login user.
+> - Preserves user-renamed account display names across runtime refreshes and vault normalization.
 >
 > 1.3.2 hotfix:
 > - Fixes the Settings Accounts pane blank-content regression after account switching by keeping the page and account list scroll area sized to the visible content region.
@@ -131,7 +136,8 @@ If **Remote sync** is enabled in Settings, the same switch also runs on the
 selected remote SSH targets. Remote sync writes the target `auth.json`, merges
 the target `config.toml` with the remote machine's existing config, updates
 remote rollout `model_provider` metadata, and reports remote warnings and
-updated rollout counts. Remote Codex processes are not stopped automatically.
+updated rollout counts. The switch confirmation can also terminate all `codex`
+processes owned by the SSH login user on each selected remote host.
 
 If something looks wrong, you can use **Maintenance -> Rollback Last Change** to
 restore the most recent switch backup.

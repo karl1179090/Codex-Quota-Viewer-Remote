@@ -586,12 +586,14 @@ func switchOrchestratorSynchronizesRemoteWhenEnabled() async throws {
 
         let result = try await orchestrator.perform(
             targetProfile: target,
-            remoteSettings: settings
+            remoteSettings: settings,
+            terminateRemoteCodexProcesses: true
         )
 
         #expect(remote.performOperations.count == 1)
         #expect(remote.performOperations[0].settings == settings)
         #expect(remote.performOperations[0].targetProviderID == "openai")
+        #expect(remote.performOperations[0].terminateRemoteCodexProcesses)
         #expect(remote.performOperations[0].authData == target.runtimeMaterial.authData)
         let expectedRemoteTargetConfig = try #require(target.runtimeMaterial.configData)
         #expect(remote.performOperations[0].targetConfigData == expectedRemoteTargetConfig)

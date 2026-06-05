@@ -1400,6 +1400,74 @@ func settingsWindowControllerRendersAccountsAfterLateUpdate() throws {
 
 @MainActor
 @Test
+func settingsWindowControllerKeepsSavedAccountActionsVisible() throws {
+    try withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let controller = SettingsWindowController(
+            settings: AppSettings(),
+            accountPanelState: SettingsAccountPanelState(
+                importStatusText: "Local vault: 2 saved accounts",
+                sections: [
+                    SettingsAccountSection(
+                        title: "Current Account (1)",
+                        items: [
+                            SettingsAccountItem(
+                                id: "current",
+                                title: "current@example.com",
+                                subtitle: "Healthy · ChatGPT · Local vault",
+                                isCurrent: true,
+                                canActivate: false,
+                                canRename: true,
+                                canForget: false
+                            )
+                        ]
+                    ),
+                    SettingsAccountSection(
+                        title: "ChatGPT Accounts (1)",
+                        items: [
+                            SettingsAccountItem(
+                                id: "other",
+                                title: "other@example.com",
+                                subtitle: "Needs attention · ChatGPT · Local vault",
+                                isCurrent: false,
+                                canActivate: true,
+                                canRename: true,
+                                canForget: true
+                            )
+                        ]
+                    ),
+                ],
+                actionsEnabled: true
+            )
+        )
+
+        let contentView = try #require(controller.window?.contentView)
+        let accountsSidebarItem = try #require(findView(in: contentView, identifier: "settings.sidebar.accounts") as? NSControl)
+        accountsSidebarItem.sendAction(accountsSidebarItem.action, to: accountsSidebarItem.target)
+        let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
+        let scrollView = try #require(findView(in: accountsView, identifier: "settings.accounts.scroll") as? NSScrollView)
+        let tableView = try #require(findView(in: scrollView, identifier: "settings.accounts.table") as? NSTableView)
+
+        controller.window?.layoutIfNeeded()
+        accountsView.layoutSubtreeIfNeeded()
+        tableView.layoutSubtreeIfNeeded()
+
+        let rowView = try #require(tableView.view(atColumn: 0, row: 3, makeIfNecessary: true))
+        rowView.layoutSubtreeIfNeeded()
+
+        for title in ["Activate", "Rename…", "Forget…"] {
+            let button = try #require(findButton(in: rowView, title: title))
+            let frameInRow = button.convert(button.bounds, to: rowView)
+            #expect(button.isHidden == false)
+            #expect(button.isEnabled == true)
+            #expect(frameInRow.minX >= 0)
+            #expect(frameInRow.maxX <= rowView.bounds.width)
+        }
+    }
+}
+
+@MainActor
+@Test
 func settingsWindowControllerRelocalizesGeneralControlsAfterLanguageChange() throws {
     try withExclusiveAppLocalization {
         AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])

@@ -2,15 +2,12 @@
 
 # Codex Quota Viewer
 
-> 当前正式版：`1.2.0`
+> 当前正式版：`1.3.1`
 >
-> 1.2.0 更新：
-> - 新增 **第三方 Provider 模式**：Codex 保持普通 ChatGPT 账号登录，但实际请求使用已保存的 API 账号。
-> - 菜单新增模式切换入口，会根据当前状态显示 **切换为第三方 Provider…** 或 **切换回正常账号**。
-> - 切换时可从已保存 API 账号中选择 Provider，并安全写入 `config.toml` 所需的 `base_url` 与 API Key。
-> - 进入和退出该模式都会创建 restore point，并同步 rollout provider、修复本地线程状态，确保切换 API 与普通账号登录时不丢会话历史。
+> 1.3.1 修复：
+> - 修复设置页账号行布局，确保切换、重命名和移除操作在账号列表刷新后仍保持可见。
 >
-> 当前 fork 改动：
+> 1.3.0 fork 更新：
 > - 新增 **远端同步**：本地切换账号时，可以同时通过 SSH 更新选中的远端 Codex 目录。
 > - 新增 **远程** 设置页：自动读取 `~/.ssh/config` 里的可选 `Host`，支持搜索、全选、重新读取、自定义 SSH 目标，以及配置远端 Codex 目录。
 > - 扩展安全切换流程：支持多远端同步，远端写入 `auth.json`、合并 `config.toml`、更新远端 rollout 的 `model_provider`，并把远端回滚绑定到同一个 restore point。
@@ -18,6 +15,13 @@
 > - ChatGPT 账号登录支持取消，并新增登录超时保护；登录过程中设置页会显示取消按钮。
 > - 定时刷新会刷新已保存账号额度；额度标签从 `1w` 改为 `7d`；账号行改为更紧凑的额度指示器，并补充菜单图标。
 > - 打包脚本会用无扩展属性的干净副本签名，并为内置 Session Manager 打包所需的 Node runtime library。
+>
+> 1.2.0 更新：
+> - 新增 **第三方 Provider 模式**：Codex 保持普通 ChatGPT 账号登录，但实际请求使用已保存的 API 账号。
+> - 菜单新增模式切换入口，会根据当前状态显示 **切换为第三方 Provider…** 或 **切换回正常账号**。
+> - 切换时可从已保存 API 账号中选择 Provider，并安全写入 `config.toml` 所需的 `base_url` 与 API Key。
+> - 进入和退出该模式都会创建 restore point，并同步 rollout provider、修复本地线程状态，确保切换 API 与普通账号登录时不丢会话历史。
+>
 
 Codex Quota Viewer 是一个原生 macOS 菜单栏应用。它把 Codex 用户最常做的几件
 事放到一个入口里：看当前额度、管理多个账号、安全切换账号、浏览和修复本地会话。

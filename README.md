@@ -2,15 +2,12 @@ English | [中文](README.zh-CN.md)
 
 # Codex Quota Viewer
 
-> Stable release: `1.2.0`
+> Stable release: `1.3.1`
 >
-> 1.2.0 update:
-> - Adds **third-party Provider mode** for ChatGPT logins, so Codex can stay signed in with the normal ChatGPT account while requests use a saved API account.
-> - Adds a menu action that changes between **Switch to Third-party Provider...** and **Switch Back to Normal Account** based on the current mode.
-> - Lets you choose the third-party Provider from saved API accounts, then writes the required `base_url` and API key into `config.toml` safely.
-> - Protects Provider-mode entry and exit with restore points, rollout provider synchronization, local thread repair, and rollback-safe session history handling.
+> 1.3.1 hotfix:
+> - Fixes Settings account rows so switch, rename, and remove actions stay visible after account-list layout refreshes.
 >
-> Current fork changes:
+> 1.3.0 fork update:
 > - Adds **Remote sync** for account switches. When enabled, a local switch can also update selected remote Codex homes over SSH.
 > - Adds a new **Remote** settings pane that reads selectable `Host` entries from `~/.ssh/config`, supports search, select all, reload, custom SSH targets, and a configurable remote Codex home path.
 > - Extends safe switching with multi-host remote sync, remote `auth.json` writes, remote `config.toml` merge, remote rollout `model_provider` updates, and rollback support tied to the same restore point.
@@ -18,6 +15,13 @@ English | [中文](README.zh-CN.md)
 > - Makes ChatGPT account login cancellable, adds a login timeout, and shows a cancel action in Settings while login is running.
 > - Refreshes saved account quota on scheduled refresh, updates quota labels from `1w` to `7d`, redesigns account rows with compact quota indicators, and adds menu icons.
 > - Hardens app packaging by signing a clean copy without extended attributes and bundling required Node runtime libraries for the Session Manager.
+>
+> 1.2.0 update:
+> - Adds **third-party Provider mode** for ChatGPT logins, so Codex can stay signed in with the normal ChatGPT account while requests use a saved API account.
+> - Adds a menu action that changes between **Switch to Third-party Provider...** and **Switch Back to Normal Account** based on the current mode.
+> - Lets you choose the third-party Provider from saved API accounts, then writes the required `base_url` and API key into `config.toml` safely.
+> - Protects Provider-mode entry and exit with restore points, rollout provider synchronization, local thread repair, and rollback-safe session history handling.
+>
 
 Codex Quota Viewer is a native macOS menu bar app for people who use Codex and
 want everything in one place: current quota, saved accounts, safe account

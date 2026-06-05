@@ -170,7 +170,6 @@ private final class SettingsAccountsTableCellView: NSTableCellView {
         target: nil,
         action: nil
     )
-    private let contentRow = NSStackView()
     private let textStack = NSStackView()
     private let buttonStack = NSStackView()
 
@@ -231,6 +230,7 @@ private final class SettingsAccountsTableCellView: NSTableCellView {
         subtitleLabel.textColor = .secondaryLabelColor
         subtitleLabel.maximumNumberOfLines = 1
         subtitleLabel.lineBreakMode = .byTruncatingTail
+        subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
         activateButton.target = self
@@ -250,6 +250,7 @@ private final class SettingsAccountsTableCellView: NSTableCellView {
         textStack.alignment = .leading
         textStack.spacing = 2
         textStack.translatesAutoresizingMaskIntoConstraints = false
+        textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         textStack.addArrangedSubview(titleLabel)
         textStack.addArrangedSubview(subtitleLabel)
 
@@ -261,21 +262,18 @@ private final class SettingsAccountsTableCellView: NSTableCellView {
         buttonStack.setContentCompressionResistancePriority(.required, for: .horizontal)
         buttonStack.setContentHuggingPriority(.required, for: .horizontal)
 
-        contentRow.orientation = .horizontal
-        contentRow.alignment = .centerY
-        contentRow.spacing = 12
-        contentRow.translatesAutoresizingMaskIntoConstraints = false
-        contentRow.addArrangedSubview(textStack)
-        contentRow.addArrangedSubview(makeFlexibleSpacer())
-        contentRow.addArrangedSubview(buttonStack)
-        addSubview(contentRow)
+        addSubview(textStack)
+        addSubview(buttonStack)
 
         NSLayoutConstraint.activate([
-            contentRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            contentRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            contentRow.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            contentRow.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
-            textStack.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            textStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            textStack.trailingAnchor.constraint(lessThanOrEqualTo: buttonStack.leadingAnchor, constant: -12),
+            textStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            textStack.topAnchor.constraint(greaterThanOrEqualTo: topAnchor, constant: 8),
+            textStack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -8),
+            buttonStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            buttonStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            buttonStack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 12),
         ])
     }
 
@@ -286,14 +284,6 @@ private final class SettingsAccountsTableCellView: NSTableCellView {
         layer?.backgroundColor = backgroundColor.cgColor
         layer?.borderWidth = 0
         layer?.borderColor = nil
-    }
-
-    private func makeFlexibleSpacer() -> NSView {
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        return spacer
     }
 
     @objc

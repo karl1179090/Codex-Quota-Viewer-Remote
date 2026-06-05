@@ -307,6 +307,10 @@ final class AppController: NSObject, NSMenuDelegate {
         profileRefreshController.refreshCurrentProfileOnly()
     }
 
+    func showSettingsWindow() {
+        presentSettingsWindow()
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
         refreshTimeSensitivePresentationState(now: Date())
         menuTrackingGate.beginTracking()

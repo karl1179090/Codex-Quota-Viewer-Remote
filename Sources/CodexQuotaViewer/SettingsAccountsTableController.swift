@@ -1,61 +1,139 @@
 import AppKit
 import Foundation
 
-private enum SettingsAccountsTableRow: Equatable {
+private enum SettingsAccountsListRow: Equatable {
     case section(SettingsAccountSection)
     case account(SettingsAccountItem)
 }
 
 @MainActor
-final class SettingsAccountsTableController: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+final class SettingsAccountsTableController: NSObject {
     var onActivateAccount: ((String) -> Void)?
     var onRenameAccount: ((String) -> Void)?
     var onForgetAccount: ((String) -> Void)?
 
-    private let tableView: NSTableView
-    private var rows: [SettingsAccountsTableRow] = []
+    private let scrollView: NSScrollView
+    private let listView: SettingsAccountsListView
+    private var rows: [SettingsAccountsListRow] = []
+    private var rowViews: [(row: SettingsAccountsListRow, view: NSView)] = []
     private var actionsEnabled = true
+    private var didInstallLayoutObservers = false
 
-    init(tableView: NSTableView) {
-        self.tableView = tableView
+    init(scrollView: NSScrollView, listView: SettingsAccountsListView) {
+        self.scrollView = scrollView
+        self.listView = listView
         super.init()
-        configureTableView()
+        configureListView()
+        installLayoutObserversIfPossible()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     func update(state: SettingsAccountPanelState) {
         actionsEnabled = state.actionsEnabled
         rows = state.sections.flatMap { section in
-            [SettingsAccountsTableRow.section(section)] + section.items.map(SettingsAccountsTableRow.account)
+            [SettingsAccountsListRow.section(section)] + section.items.map(SettingsAccountsListRow.account)
         }
 
+        renderRows()
         refreshLayout()
-        tableView.reloadData()
-        if !rows.isEmpty {
-            tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0 ..< rows.count))
-        }
-        tableView.layoutSubtreeIfNeeded()
     }
 
     func refreshLayout() {
-        let clipSize = tableView.enclosingScrollView?.contentView.bounds.size ?? .zero
-        let rowHeight = rows.indices.reduce(CGFloat(0)) { total, index in
-            total + tableView(tableView, heightOfRow: index)
+        installLayoutObserversIfPossible()
+        scrollView.layoutSubtreeIfNeeded()
+
+        let clipSize = scrollView.contentView.bounds.size
+        let width = preferredLayoutDimension(
+            visibleDimension: clipSize.width,
+            scrollDimension: scrollView.bounds.width,
+            currentDimension: listView.bounds.width
+        )
+        guard width > 1 || clipSize.height > 1 else {
+            return
         }
-        let spacingHeight = max(0, CGFloat(rows.count - 1)) * tableView.intercellSpacing.height
-        let contentHeight = rowHeight + spacingHeight
-        let width = max(clipSize.width, tableView.bounds.width, 1)
+
+        let totalRowHeight = rows.reduce(CGFloat(0)) { total, row in
+            total + rowHeight(for: row)
+        }
+        let spacingHeight = max(0, CGFloat(rows.count - 1)) * Self.rowSpacing
+        let contentHeight = totalRowHeight + spacingHeight
         let height = max(clipSize.height, contentHeight, 1)
+        let nextSize = NSSize(width: max(width, 1), height: height)
 
-        tableView.tableColumns.first?.width = width
-        tableView.setFrameSize(NSSize(width: width, height: height))
+        let nextFrame = NSRect(origin: .zero, size: nextSize)
+        if abs(listView.frame.width - nextSize.width) > 0.5
+            || abs(listView.frame.height - nextSize.height) > 0.5
+            || listView.frame.origin != .zero {
+            listView.frame = nextFrame
+        }
+        layoutRows(width: nextSize.width)
+        listView.needsDisplay = true
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        rows.count
+    private static let rowSpacing: CGFloat = 4
+
+    private func configureListView() {
+        listView.identifier = NSUserInterfaceItemIdentifier("settings.accounts.list")
+        listView.wantsLayer = true
+        listView.translatesAutoresizingMaskIntoConstraints = true
     }
 
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        switch rows[row] {
+    private func renderRows() {
+        rowViews.removeAll()
+        for view in listView.subviews {
+            view.removeFromSuperview()
+        }
+
+        for row in rows {
+            let view: NSView
+            switch row {
+            case .section(let section):
+                view = configuredSectionView(section.title)
+            case .account(let item):
+                view = configuredAccountView(item)
+            }
+            view.translatesAutoresizingMaskIntoConstraints = true
+            view.autoresizingMask = [.width]
+            listView.addSubview(view)
+            rowViews.append((row, view))
+        }
+    }
+
+    private func layoutRows(width: CGFloat) {
+        var y: CGFloat = 0
+        for (index, rowView) in rowViews.enumerated() {
+            let height = rowHeight(for: rowView.row)
+            rowView.view.frame = NSRect(x: 0, y: y, width: width, height: height)
+            rowView.view.needsLayout = true
+            rowView.view.layoutSubtreeIfNeeded()
+            y += height
+            if index < rowViews.count - 1 {
+                y += Self.rowSpacing
+            }
+        }
+    }
+
+    private func preferredLayoutDimension(
+        visibleDimension: CGFloat,
+        scrollDimension: CGFloat,
+        currentDimension: CGFloat
+    ) -> CGFloat {
+        if visibleDimension > 1 {
+            return visibleDimension
+        }
+        if scrollDimension > 1 {
+            return scrollDimension
+        }
+        return max(currentDimension, 1)
+    }
+
+    private func rowHeight(for row: SettingsAccountsListRow) -> CGFloat {
+        switch row {
         case .section:
             return 26
         case .account:
@@ -63,52 +141,45 @@ final class SettingsAccountsTableController: NSObject, NSTableViewDataSource, NS
         }
     }
 
-    func tableView(
-        _ tableView: NSTableView,
-        viewFor tableColumn: NSTableColumn?,
-        row: Int
-    ) -> NSView? {
-        switch rows[row] {
-        case .section(let section):
-            return configuredSectionView(section.title)
-        case .account(let item):
-            return configuredAccountView(item)
+    private func installLayoutObserversIfPossible() {
+        guard !didInstallLayoutObservers else {
+            return
         }
+
+        scrollView.postsFrameChangedNotifications = true
+        scrollView.contentView.postsBoundsChangedNotifications = true
+
+        let center = NotificationCenter.default
+        center.addObserver(
+            self,
+            selector: #selector(observedLayoutDidChange),
+            name: NSView.frameDidChangeNotification,
+            object: scrollView
+        )
+        center.addObserver(
+            self,
+            selector: #selector(observedLayoutDidChange),
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView
+        )
+        didInstallLayoutObservers = true
     }
 
-    private func configureTableView() {
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("settings.accounts.column"))
-        column.resizingMask = .autoresizingMask
-        tableView.addTableColumn(column)
-        tableView.headerView = nil
-        tableView.focusRingType = .none
-        tableView.selectionHighlightStyle = .none
-        tableView.usesAlternatingRowBackgroundColors = false
-        tableView.gridStyleMask = []
-        tableView.intercellSpacing = NSSize(width: 0, height: 4)
-        tableView.rowSizeStyle = .small
-        tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
-        tableView.target = self
-        tableView.delegate = self
-        tableView.dataSource = self
-        tableView.identifier = NSUserInterfaceItemIdentifier("settings.accounts.table")
-        tableView.backgroundColor = .clear
+    @objc
+    private func observedLayoutDidChange() {
+        refreshLayout()
     }
 
     private func configuredSectionView(_ title: String) -> NSView {
-        let identifier = NSUserInterfaceItemIdentifier("settings.accounts.section.row")
-        let view = (tableView.makeView(withIdentifier: identifier, owner: self) as? SettingsAccountsSectionRowView)
-            ?? SettingsAccountsSectionRowView()
-        view.identifier = identifier
+        let view = SettingsAccountsSectionRowView()
+        view.identifier = NSUserInterfaceItemIdentifier("settings.accounts.section.row")
         view.apply(title: title)
         return view
     }
 
     private func configuredAccountView(_ item: SettingsAccountItem) -> NSView {
-        let identifier = NSUserInterfaceItemIdentifier("settings.accounts.account.row")
-        let view = (tableView.makeView(withIdentifier: identifier, owner: self) as? SettingsAccountsTableCellView)
-            ?? SettingsAccountsTableCellView()
-        view.identifier = identifier
+        let view = SettingsAccountsRowView()
+        view.identifier = NSUserInterfaceItemIdentifier("settings.accounts.account.row")
         view.apply(
             item: item,
             actionsEnabled: actionsEnabled,
@@ -120,7 +191,7 @@ final class SettingsAccountsTableController: NSObject, NSTableViewDataSource, NS
     }
 }
 
-private final class SettingsAccountsSectionRowView: NSTableCellView {
+private final class SettingsAccountsSectionRowView: NSView {
     private let titleLabel = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
@@ -152,7 +223,7 @@ private final class SettingsAccountsSectionRowView: NSTableCellView {
     }
 }
 
-private final class SettingsAccountsTableCellView: NSTableCellView {
+private final class SettingsAccountsRowView: NSView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let activateButton = NSButton(

@@ -3,9 +3,11 @@ import Foundation
 
 @MainActor
 final class SettingsAccountsView: NSView {
+    var onLayout: (() -> Void)?
+
     let headerView = NSView()
     let scrollView = NSScrollView()
-    let tableView = NSTableView()
+    let listView = SettingsAccountsListView()
     let importStatusLabel = NSTextField(labelWithString: "")
     let addChatGPTButton = NSButton(title: "", target: nil, action: nil)
     let addAPIButton = NSButton(title: "", target: nil, action: nil)
@@ -21,6 +23,11 @@ final class SettingsAccountsView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        onLayout?()
     }
 
     func applyLocalizedText() {
@@ -44,7 +51,7 @@ final class SettingsAccountsView: NSView {
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
-        scrollView.documentView = tableView
+        scrollView.documentView = listView
         addSubview(scrollView)
 
         [addChatGPTButton, addAPIButton, cancelChatGPTLoginButton, openVaultButton].forEach {
@@ -99,5 +106,12 @@ final class SettingsAccountsView: NSView {
             buttonRow.widthAnchor.constraint(equalTo: headerStack.widthAnchor),
             importStatusLabel.widthAnchor.constraint(equalTo: headerStack.widthAnchor),
         ])
+    }
+}
+
+@MainActor
+final class SettingsAccountsListView: NSView {
+    override var isFlipped: Bool {
+        true
     }
 }

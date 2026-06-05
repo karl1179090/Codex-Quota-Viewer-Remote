@@ -1245,7 +1245,7 @@ func settingsWindowControllerKeepsAccountRowsVisibleAfterLoginCancelStateClears(
         accountsSidebarItem.sendAction(accountsSidebarItem.action, to: accountsSidebarItem.target)
         let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
         let scrollView = try #require(findView(in: accountsView, identifier: "settings.accounts.scroll") as? NSScrollView)
-        let tableView = try #require(findView(in: scrollView, identifier: "settings.accounts.table") as? NSTableView)
+        let listView = try #require(findView(in: scrollView, identifier: "settings.accounts.list") as? SettingsAccountsListView)
 
         controller.update(
             settings: AppSettings(),
@@ -1259,13 +1259,102 @@ func settingsWindowControllerKeepsAccountRowsVisibleAfterLoginCancelStateClears(
         controller.update(settings: AppSettings(), accountPanelState: normalState)
         controller.window?.layoutIfNeeded()
         accountsView.layoutSubtreeIfNeeded()
+        listView.layoutSubtreeIfNeeded()
 
-        #expect(tableView.numberOfRows == 4)
-        #expect(tableView.frame.height > 0)
-        #expect(tableView.view(atColumn: 0, row: 1, makeIfNecessary: true) != nil)
-        #expect(tableView.view(atColumn: 0, row: 3, makeIfNecessary: true) != nil)
-        #expect(findLabel(in: tableView) { $0 == "current@example.com" } != nil)
-        #expect(findLabel(in: tableView) { $0 == "other@example.com" } != nil)
+        #expect(listView.subviews.count == 4)
+        #expect(listView.frame.height > 0)
+        #expect(findLabel(in: listView) { $0 == "current@example.com" } != nil)
+        #expect(findLabel(in: listView) { $0 == "other@example.com" } != nil)
+    }
+}
+
+@MainActor
+@Test
+func settingsWindowControllerRestoresAccountsPageAfterHiddenAccountStateUpdates() throws {
+    try withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let normalState = SettingsAccountPanelState(
+            importStatusText: "Local vault: 2 saved accounts",
+            sections: [
+                SettingsAccountSection(
+                    title: "Current Account (1)",
+                    items: [
+                        SettingsAccountItem(
+                            id: "current",
+                            title: "current@example.com",
+                            subtitle: "ChatGPT · Stored in local vault",
+                            isCurrent: true,
+                            canActivate: false,
+                            canRename: true,
+                            canForget: false
+                        )
+                    ]
+                ),
+                SettingsAccountSection(
+                    title: "ChatGPT Accounts (1)",
+                    items: [
+                        SettingsAccountItem(
+                            id: "other",
+                            title: "other@example.com",
+                            subtitle: "ChatGPT · Stored in local vault",
+                            isCurrent: false,
+                            canActivate: true,
+                            canRename: true,
+                            canForget: true
+                        )
+                    ]
+                ),
+            ],
+            actionsEnabled: true
+        )
+        let controller = SettingsWindowController(
+            settings: AppSettings(),
+            accountPanelState: SettingsAccountPanelState(importStatusText: "", sections: [], actionsEnabled: true)
+        )
+        let contentView = try #require(controller.window?.contentView)
+        let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
+        let scrollView = try #require(findView(in: accountsView, identifier: "settings.accounts.scroll") as? NSScrollView)
+        let listView = try #require(findView(in: scrollView, identifier: "settings.accounts.list") as? SettingsAccountsListView)
+        #expect(accountsView.isHidden)
+
+        listView.setFrameSize(NSSize(width: 4_000, height: 1))
+
+        controller.update(
+            settings: AppSettings(),
+            accountPanelState: SettingsAccountPanelState(
+                importStatusText: normalState.importStatusText,
+                sections: normalState.sections,
+                actionsEnabled: false
+            )
+        )
+        controller.update(settings: AppSettings(), accountPanelState: normalState)
+
+        let accountsSidebarItem = try #require(findView(in: contentView, identifier: "settings.sidebar.accounts") as? NSControl)
+        accountsSidebarItem.sendAction(accountsSidebarItem.action, to: accountsSidebarItem.target)
+
+        controller.window?.layoutIfNeeded()
+        accountsView.layoutSubtreeIfNeeded()
+        listView.layoutSubtreeIfNeeded()
+
+        #expect(accountsView.isHidden == false)
+        #expect(findButton(in: accountsView, title: "Sign in with ChatGPT")?.isHidden == false)
+        #expect(scrollView.frame.height > 100)
+        #expect(listView.subviews.count == 4)
+        #expect(listView.frame.width > 1)
+        #expect(listView.frame.width <= scrollView.contentView.bounds.width + 1)
+
+        let rowView = listView.subviews[3]
+        rowView.layoutSubtreeIfNeeded()
+        #expect(scrollView.contentView.documentVisibleRect.intersects(rowView.frame))
+        #expect(findLabel(in: rowView) { $0 == "other@example.com" } != nil)
+        for title in ["Activate", "Rename…", "Forget…"] {
+            let button = try #require(findButton(in: rowView, title: title))
+            let frameInRow = button.convert(button.bounds, to: rowView)
+            #expect(button.isHidden == false)
+            #expect(button.isEnabled == true)
+            #expect(frameInRow.minX >= 0)
+            #expect(frameInRow.maxX <= rowView.bounds.width)
+        }
     }
 }
 
@@ -1321,18 +1410,22 @@ func settingsWindowControllerSeparatesAccountsHeaderFromScrollableList() throws 
 
     let contentView = try #require(controller.window?.contentView)
     let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
+    let accountsSidebarItem = try #require(findView(in: contentView, identifier: "settings.sidebar.accounts") as? NSControl)
+    accountsSidebarItem.sendAction(accountsSidebarItem.action, to: accountsSidebarItem.target)
     let header = try #require(findView(in: accountsView, identifier: "settings.accounts.header"))
     let scrollView = try #require(findView(in: accountsView, identifier: "settings.accounts.scroll") as? NSScrollView)
 
     #expect(scrollView.hasVerticalScroller)
     #expect(header !== scrollView)
     #expect(isDescendant(header, of: scrollView) == false)
-    let tableView = try #require(findView(in: scrollView, identifier: "settings.accounts.table") as? NSTableView)
+    let listView = try #require(findView(in: scrollView, identifier: "settings.accounts.list") as? SettingsAccountsListView)
     controller.window?.layoutIfNeeded()
     accountsView.layoutSubtreeIfNeeded()
-    #expect(tableView.numberOfRows == 5)
-    #expect(scrollView.documentView === tableView)
-    #expect(tableView.frame.height > 0)
+    #expect(listView.subviews.count == 5)
+    #expect(scrollView.documentView === listView)
+    #expect(accountsView.frame.height > header.frame.height + 100)
+    #expect(scrollView.frame.height > 100)
+    #expect(listView.frame.height > 0)
 }
 
 @MainActor
@@ -1350,7 +1443,7 @@ func settingsWindowControllerRendersAccountsAfterLateUpdate() throws {
     let contentView = try #require(controller.window?.contentView)
     let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
     let scrollView = try #require(findView(in: accountsView, identifier: "settings.accounts.scroll") as? NSScrollView)
-    let tableView = try #require(findView(in: scrollView, identifier: "settings.accounts.table") as? NSTableView)
+    let listView = try #require(findView(in: scrollView, identifier: "settings.accounts.list") as? SettingsAccountsListView)
 
     controller.update(
         settings: AppSettings(),
@@ -1393,9 +1486,9 @@ func settingsWindowControllerRendersAccountsAfterLateUpdate() throws {
     controller.window?.layoutIfNeeded()
     accountsView.layoutSubtreeIfNeeded()
 
-    #expect(tableView.numberOfRows == 4)
-    #expect(tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) != nil)
-    #expect(tableView.view(atColumn: 0, row: 1, makeIfNecessary: true) != nil)
+    #expect(listView.subviews.count == 4)
+    #expect(listView.subviews[0].identifier?.rawValue == "settings.accounts.section.row")
+    #expect(listView.subviews[1].identifier?.rawValue == "settings.accounts.account.row")
 }
 
 @MainActor
@@ -1446,14 +1539,17 @@ func settingsWindowControllerKeepsSavedAccountActionsVisible() throws {
         accountsSidebarItem.sendAction(accountsSidebarItem.action, to: accountsSidebarItem.target)
         let accountsView = try #require(findView(ofType: SettingsAccountsView.self, in: contentView))
         let scrollView = try #require(findView(in: accountsView, identifier: "settings.accounts.scroll") as? NSScrollView)
-        let tableView = try #require(findView(in: scrollView, identifier: "settings.accounts.table") as? NSTableView)
+        let listView = try #require(findView(in: scrollView, identifier: "settings.accounts.list") as? SettingsAccountsListView)
 
         controller.window?.layoutIfNeeded()
         accountsView.layoutSubtreeIfNeeded()
-        tableView.layoutSubtreeIfNeeded()
+        listView.layoutSubtreeIfNeeded()
 
-        let rowView = try #require(tableView.view(atColumn: 0, row: 3, makeIfNecessary: true))
+        #expect(scrollView.frame.height > 100)
+        #expect(listView.subviews.count == 4)
+        let rowView = listView.subviews[3]
         rowView.layoutSubtreeIfNeeded()
+        #expect(scrollView.contentView.documentVisibleRect.intersects(rowView.frame))
 
         for title in ["Activate", "Rename…", "Forget…"] {
             let button = try #require(findButton(in: rowView, title: title))
@@ -1628,14 +1724,6 @@ private func findTextField(in window: NSWindow?, identifier: String) -> NSTextFi
         return nil
     }
     return findView(in: contentView, identifier: identifier) as? NSTextField
-}
-
-@MainActor
-private func findTableView(in window: NSWindow?, identifier: String) -> NSTableView? {
-    guard let contentView = window?.contentView else {
-        return nil
-    }
-    return findView(in: contentView, identifier: identifier) as? NSTableView
 }
 
 @MainActor

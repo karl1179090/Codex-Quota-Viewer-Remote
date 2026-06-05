@@ -101,6 +101,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         self.accountPanelState = accountPanelState
         applySettingsToControls()
         applyAccountPanelState()
+        applySelectedPaneVisibility()
+    }
+
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        applySelectedPaneVisibility()
     }
 
     private func setupUI() {
@@ -183,7 +189,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 page.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: 44),
                 page.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -44),
                 page.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 34),
-                page.bottomAnchor.constraint(lessThanOrEqualTo: contentContainer.bottomAnchor, constant: -28),
+                page.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor, constant: -28),
             ])
         }
     }
@@ -224,7 +230,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func makeAccountsTableController() -> SettingsAccountsTableController {
-        let controller = SettingsAccountsTableController(tableView: accountsView.tableView)
+        let controller = SettingsAccountsTableController(
+            scrollView: accountsView.scrollView,
+            listView: accountsView.listView
+        )
+        accountsView.onLayout = { [weak controller] in
+            controller?.refreshLayout()
+        }
         controller.onActivateAccount = { [weak self] identifier in
             self?.onActivateAccount?(identifier)
         }
@@ -430,6 +442,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func selectPane(_ pane: SettingsPane) {
         selectedPane = pane
+        applySelectedPaneVisibility()
+    }
+
+    private func applySelectedPaneVisibility() {
+        let pane = selectedPane
         generalView.isHidden = pane != .general
         remoteView.isHidden = pane != .remote
         accountsView.isHidden = pane != .accounts

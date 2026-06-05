@@ -12,6 +12,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         controller?.stopSessionManagerIfNeeded()
     }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        controller?.showSettingsWindow()
+        return true
+    }
 }
 
 let app = NSApplication.shared

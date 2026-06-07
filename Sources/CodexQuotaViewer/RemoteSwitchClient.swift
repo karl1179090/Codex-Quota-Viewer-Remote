@@ -786,6 +786,9 @@ private func remotePerformScript(
         raise
     PY
     . "$SUMMARY_FILE"
+    if [ "${CODEX_QUOTA_VIEWER_SKIP_APP_SERVER_PKILL:-0}" != "1" ]; then
+      pkill -f 'codex.*app-server' 2>/dev/null || true
+    fi
     rm -rf "$TMP_DIR"
     echo "REMOTE_SWITCH_SUMMARY updated_rollouts=${UPDATED_ROLLOUTS:-0} warnings=${WARNINGS:-0} terminated_codex_processes=${TERMINATED_REMOTE_CODEX:-0}"
     """

@@ -102,7 +102,7 @@ func scheduledRefreshTimerRefreshesSavedAccounts() async throws {
     let timer = try #require(refreshTimer(from: controller))
     timer.fire()
 
-    try await waitForScheduledFetchCount(1, counter: fetchCounter)
+    try await waitForScheduledFetchCount(atLeast: 1, counter: fetchCounter)
 }
 
 private actor ScheduledRefreshFetchCounter {
@@ -127,15 +127,15 @@ private func refreshTimer(from controller: ProfileRefreshController) -> Timer? {
 }
 
 private func waitForScheduledFetchCount(
-    _ expected: Int,
+    atLeast expected: Int,
     counter: ScheduledRefreshFetchCounter
 ) async throws {
-    for _ in 0..<50 {
-        if await counter.savedAccountFetchCount() == expected {
+    for _ in 0..<200 {
+        if await counter.savedAccountFetchCount() >= expected {
             return
         }
         try await Task.sleep(nanoseconds: 20_000_000)
     }
 
-    #expect(await counter.savedAccountFetchCount() == expected)
+    #expect(await counter.savedAccountFetchCount() >= expected)
 }

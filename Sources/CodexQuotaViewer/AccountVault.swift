@@ -92,7 +92,6 @@ struct VaultAccountMetadata: Codable, Equatable, Identifiable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         displayName = try container.decode(String.self, forKey: .displayName)
-        isDisplayNameUserEdited = try container.decodeIfPresent(Bool.self, forKey: .isDisplayNameUserEdited) ?? false
         authMode = try container.decode(CodexAuthMode.self, forKey: .authMode)
         providerID = try container.decodeIfPresent(String.self, forKey: .providerID)
         baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL)
@@ -101,6 +100,8 @@ struct VaultAccountMetadata: Codable, Equatable, Identifiable {
         lastUsedAt = try container.decodeIfPresent(Date.self, forKey: .lastUsedAt)
         let decodedSource = try container.decodeIfPresent(VaultAccountSource.self, forKey: .source)
         source = sanitizeLegacyVaultSource(decodedSource, authMode: authMode)
+        isDisplayNameUserEdited = try container.decodeIfPresent(Bool.self, forKey: .isDisplayNameUserEdited)
+            ?? isLegacyCustomDisplayName(displayName, source: source)
         runtimeKey = try container.decode(String.self, forKey: .runtimeKey)
         _ = try container.decodeIfPresent(Bool.self, forKey: .isImportedFromCCSwitch)
     }
@@ -109,9 +110,7 @@ struct VaultAccountMetadata: Codable, Equatable, Identifiable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(displayName, forKey: .displayName)
-        if isDisplayNameUserEdited {
-            try container.encode(isDisplayNameUserEdited, forKey: .isDisplayNameUserEdited)
-        }
+        try container.encode(isDisplayNameUserEdited, forKey: .isDisplayNameUserEdited)
         try container.encode(authMode, forKey: .authMode)
         try container.encodeIfPresent(providerID, forKey: .providerID)
         try container.encodeIfPresent(baseURL, forKey: .baseURL)
@@ -767,6 +766,20 @@ private let genericDisplayNames: Set<String> = [
     "当前账号",
     "openai",
 ]
+
+private func isLegacyCustomDisplayName(_ displayName: String, source: VaultAccountSource) -> Bool {
+    let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+          !genericDisplayNames.contains(trimmed.lowercased()) else {
+        return false
+    }
+
+    if source == .manualAPI {
+        return true
+    }
+
+    return !trimmed.contains("@")
+}
 
 private func sanitizeLegacyVaultSource(
     _ source: VaultAccountSource?,

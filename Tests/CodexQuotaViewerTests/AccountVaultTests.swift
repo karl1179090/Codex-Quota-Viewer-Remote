@@ -73,9 +73,11 @@ func vaultAccountStoreLoadsLegacyMetadataAndRewritesWithoutLegacyFields() throws
 
     #expect(loaded.accounts.count == 1)
     #expect(loaded.accounts.first?.metadata.displayName == "legacy@example.com")
+    #expect(loaded.accounts.first?.metadata.isDisplayNameUserEdited == false)
     #expect(loaded.accounts.first?.metadata.authMode == .chatgpt)
     #expect(rewritten.contains("legacyCCSwitch") == false)
     #expect(rewritten.contains("isImportedFromCCSwitch") == false)
+    #expect(rewritten.contains("\"isDisplayNameUserEdited\" : false"))
     #expect(rewritten.contains("\"source\""))
 }
 
@@ -242,6 +244,75 @@ func vaultAccountStorePreservesRenamedDisplayNameAcrossRuntimeRefresh() throws {
     #expect(refreshed.updated)
     #expect(snapshot.accounts.count == 1)
     #expect(snapshot.accounts.first?.metadata.displayName == "Work Main")
+    #expect(snapshot.accounts.first?.metadata.isDisplayNameUserEdited == true)
+}
+
+@Test
+func vaultAccountStorePreservesLegacyCustomDisplayNameAcrossRuntimeRefresh() throws {
+    let harness = try makeHarness()
+    let vault = makeVaultStore(harness)
+
+    let originalRuntime = ProfileRuntimeMaterial(
+        authData: Data(
+            """
+            {"auth_mode":"chatgpt","last_refresh":"2026-03-30T02:33:21.958042Z","tokens":{"access_token":"token-1","refresh_token":"refresh-1","account_id":"acct-legacy-custom"}}
+            """.utf8
+        ),
+        configData: Data("model_provider = \"openai\"\n".utf8)
+    )
+    let refreshedRuntime = ProfileRuntimeMaterial(
+        authData: Data(
+            """
+            {"auth_mode":"chatgpt","last_refresh":"2026-03-31T01:45:41.950247Z","tokens":{"access_token":"token-2","refresh_token":"refresh-2","account_id":"acct-legacy-custom"}}
+            """.utf8
+        ),
+        configData: Data("model_provider = \"openai\"\nmodel = \"gpt-5.4\"\n".utf8)
+    )
+    let accountID = vault.accountID(for: originalRuntime)
+    let accountDirectory = vault.accountsRootURL.appendingPathComponent(accountID, isDirectory: true)
+    try FileManager.default.createDirectory(at: accountDirectory, withIntermediateDirectories: true)
+    let metadata = Data(
+        """
+        {
+          "id": "\(accountID)",
+          "displayName": "Pix6.5",
+          "authMode": "chatgpt",
+          "providerID": "openai",
+          "createdAt": "2026-03-30T00:00:00Z",
+          "source": "manualChatGPT",
+          "runtimeKey": "chatgpt:account:acct-legacy-custom"
+        }
+        """.utf8
+    )
+    try metadata.write(to: accountDirectory.appendingPathComponent("metadata.json"))
+    try originalRuntime.authData.write(to: accountDirectory.appendingPathComponent("auth.json"))
+    try #require(originalRuntime.configData).write(to: accountDirectory.appendingPathComponent("config.toml"))
+    try Data(
+        """
+        [{
+          "id": "\(accountID)",
+          "displayName": "Pix6.5",
+          "authMode": "chatgpt",
+          "providerID": "openai",
+          "createdAt": "2026-03-30T00:00:00Z",
+          "source": "manualChatGPT",
+          "runtimeKey": "chatgpt:account:acct-legacy-custom"
+        }]
+        """.utf8
+    ).write(to: vault.indexURL)
+
+    let loaded = try vault.loadSnapshot()
+    let refreshed = try vault.upsertAccount(
+        fallbackDisplayName: "original@example.com",
+        source: .currentRuntime,
+        runtimeMaterial: refreshedRuntime
+    )
+    let snapshot = try vault.loadSnapshot()
+
+    #expect(loaded.accounts.first?.metadata.isDisplayNameUserEdited == true)
+    #expect(refreshed.inserted == false)
+    #expect(refreshed.updated)
+    #expect(snapshot.accounts.first?.metadata.displayName == "Pix6.5")
     #expect(snapshot.accounts.first?.metadata.isDisplayNameUserEdited == true)
 }
 

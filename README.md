@@ -2,7 +2,11 @@ English | [中文](README.zh-CN.md)
 
 # Codex Quota Viewer
 
-> Stable release: `1.3.3`
+> Stable release: `1.3.4`
+>
+> 1.3.4 hotfix:
+> - Restarts remote Codex app-server processes after remote account sync so they reload the switched account.
+> - Preserves legacy custom account display names that were saved before the rename flag existed.
 >
 > 1.3.3 update:
 > - Adds an account-switch confirmation option to terminate Codex processes on selected remote SSH hosts.

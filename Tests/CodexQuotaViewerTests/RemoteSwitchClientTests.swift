@@ -66,6 +66,8 @@ func sshRemoteSwitchClientBuildsSSHInvocationAndPayloadScript() async throws {
     #expect(script.contains("remote-switch-backups/$RESTORE_ID"))
     #expect(script.contains("updated_rollouts=${UPDATED_ROLLOUTS:-0}"))
     #expect(script.contains("terminated_codex_processes=${TERMINATED_REMOTE_CODEX:-0}"))
+    #expect(script.contains("CODEX_QUOTA_VIEWER_SKIP_APP_SERVER_PKILL"))
+    #expect(script.contains("pkill -f 'codex.*app-server'"))
     #expect(script.contains("restore_manifest()"))
     #expect(script.contains("(backup_root / \"manifest.json\").write_text"))
 }
@@ -417,6 +419,9 @@ private final class LocalShellRemoteProcessExecutor: ProcessExecuting, @unchecke
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-s"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["CODEX_QUOTA_VIEWER_SKIP_APP_SERVER_PKILL"] = "1"
+        process.environment = environment
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let errorPipe = Pipe()

@@ -18,6 +18,10 @@ import {
 
 const SESSION_SELECT_COLUMNS = `
   id,
+  thread_id as threadId,
+  host_id as hostId,
+  host_label as hostLabel,
+  is_remote as isRemote,
   coalesce(active_path, archive_path, snapshot_path) as filePath,
   active_path as activePath,
   archive_path as archivePath,
@@ -55,13 +59,15 @@ export class SessionRepository {
     const indexedAt = new Date().toISOString();
     const insertSession = this.db.prepare(`
       insert into sessions (
-        id, active_path, archive_path, snapshot_path, original_relative_path,
+        id, thread_id, host_id, host_label, is_remote,
+        active_path, archive_path, snapshot_path, original_relative_path,
         cwd, started_at, originator, source, cli_version, model_provider,
         size_bytes, line_count, event_count, tool_call_count,
         user_prompt_excerpt, latest_agent_message_excerpt, status,
         created_at, updated_at, indexed_at
       ) values (
-        @id, @activePath, @archivePath, @snapshotPath, @originalRelativePath,
+        @id, @threadId, @hostId, @hostLabel, @isRemote,
+        @activePath, @archivePath, @snapshotPath, @originalRelativePath,
         @cwd, @startedAt, @originator, @source, @cliVersion, @modelProvider,
         @sizeBytes, @lineCount, @eventCount, @toolCallCount,
         @userPromptExcerpt, @latestAgentMessageExcerpt, @status,
@@ -99,6 +105,11 @@ export class SessionRepository {
 
         insertSession.run({
           ...entry.summary,
+          id: entry.recordId,
+          threadId: entry.threadId,
+          hostId: entry.hostId,
+          hostLabel: entry.hostLabel,
+          isRemote: entry.isRemote ? 1 : 0,
           activePath: entry.activePath,
           archivePath: entry.archivePath,
           snapshotPath: entry.snapshotPath,
@@ -109,15 +120,15 @@ export class SessionRepository {
           indexedAt,
         });
         insertSearch.run({
-          sessionId: entry.summary.id,
-          id: entry.summary.id,
+          sessionId: entry.recordId,
+          id: entry.recordId,
           cwd: entry.summary.cwd,
           userPromptExcerpt: entry.summary.userPromptExcerpt,
           latestAgentMessageExcerpt: entry.summary.latestAgentMessageExcerpt,
         });
 
         entry.timeline.forEach((item, ordinal) => {
-          insertTimelineItem.run(toTimelineRow(entry.summary.id, ordinal, item));
+          insertTimelineItem.run(toTimelineRow(entry.recordId, ordinal, item));
         });
       }
     });
@@ -128,22 +139,28 @@ export class SessionRepository {
 
   saveCatalogEntry(entry: CatalogSessionEntry) {
     const now = new Date().toISOString();
-    const existing = this.readSessionRowsByIds([entry.summary.id]).get(entry.summary.id);
+    const existing = this.readSessionRowsByIds([entry.recordId]).get(entry.recordId);
     const upsertSession = this.db.prepare(`
       insert into sessions (
-        id, active_path, archive_path, snapshot_path, original_relative_path,
+        id, thread_id, host_id, host_label, is_remote,
+        active_path, archive_path, snapshot_path, original_relative_path,
         cwd, started_at, originator, source, cli_version, model_provider,
         size_bytes, line_count, event_count, tool_call_count,
         user_prompt_excerpt, latest_agent_message_excerpt, status,
         created_at, updated_at, indexed_at
       ) values (
-        @id, @activePath, @archivePath, @snapshotPath, @originalRelativePath,
+        @id, @threadId, @hostId, @hostLabel, @isRemote,
+        @activePath, @archivePath, @snapshotPath, @originalRelativePath,
         @cwd, @startedAt, @originator, @source, @cliVersion, @modelProvider,
         @sizeBytes, @lineCount, @eventCount, @toolCallCount,
         @userPromptExcerpt, @latestAgentMessageExcerpt, @status,
         @createdAt, @updatedAt, @indexedAt
       )
       on conflict(id) do update set
+        thread_id = excluded.thread_id,
+        host_id = excluded.host_id,
+        host_label = excluded.host_label,
+        is_remote = excluded.is_remote,
         active_path = excluded.active_path,
         archive_path = excluded.archive_path,
         snapshot_path = excluded.snapshot_path,
@@ -196,6 +213,11 @@ export class SessionRepository {
 
       upsertSession.run({
         ...catalogEntry.summary,
+        id: catalogEntry.recordId,
+        threadId: catalogEntry.threadId,
+        hostId: catalogEntry.hostId,
+        hostLabel: catalogEntry.hostLabel,
+        isRemote: catalogEntry.isRemote ? 1 : 0,
         activePath: catalogEntry.activePath,
         archivePath: catalogEntry.archivePath,
         snapshotPath: catalogEntry.snapshotPath,
@@ -206,18 +228,18 @@ export class SessionRepository {
         indexedAt: now,
       });
 
-      deleteTimelineItems.run(catalogEntry.summary.id);
-      deleteSearchEntry.run(catalogEntry.summary.id);
+      deleteTimelineItems.run(catalogEntry.recordId);
+      deleteSearchEntry.run(catalogEntry.recordId);
       insertSearch.run({
-        sessionId: catalogEntry.summary.id,
-        id: catalogEntry.summary.id,
+        sessionId: catalogEntry.recordId,
+        id: catalogEntry.recordId,
         cwd: catalogEntry.summary.cwd,
         userPromptExcerpt: catalogEntry.summary.userPromptExcerpt,
         latestAgentMessageExcerpt: catalogEntry.summary.latestAgentMessageExcerpt,
       });
 
       catalogEntry.timeline.forEach((item, ordinal) => {
-        insertTimelineItem.run(toTimelineRow(catalogEntry.summary.id, ordinal, item));
+        insertTimelineItem.run(toTimelineRow(catalogEntry.recordId, ordinal, item));
       });
     });
 
@@ -237,7 +259,11 @@ export class SessionRepository {
       .prepare(
         `
         update sessions
-        set active_path = @activePath,
+        set thread_id = @threadId,
+            host_id = @hostId,
+            host_label = @hostLabel,
+            is_remote = @isRemote,
+            active_path = @activePath,
             archive_path = @archivePath,
             snapshot_path = @snapshotPath,
             original_relative_path = @originalRelativePath,
@@ -261,6 +287,7 @@ export class SessionRepository {
       )
       .run({
         ...next,
+        isRemote: next.isRemote ? 1 : 0,
         updatedAt: now,
         indexedAt: now,
       });
@@ -524,6 +551,10 @@ export class SessionRepository {
     this.db.exec(`
       create table if not exists sessions (
         id text primary key,
+        thread_id text not null,
+        host_id text not null default 'local',
+        host_label text not null default 'This Mac',
+        is_remote integer not null default 0,
         active_path text,
         archive_path text,
         snapshot_path text,
@@ -590,6 +621,10 @@ export class SessionRepository {
     `);
 
     this.ensureLegacyColumns();
+    this.db.exec(`
+      create index if not exists idx_sessions_host_started_at
+        on sessions(host_id, started_at desc);
+    `);
   }
 
   private ensureLegacyColumns() {
@@ -607,6 +642,31 @@ export class SessionRepository {
         alter table sessions add column indexed_at text;
         update sessions
         set indexed_at = coalesce(indexed_at, updated_at, created_at, CURRENT_TIMESTAMP);
+      `);
+    }
+
+    if (!columnNames.has("thread_id")) {
+      this.db.exec(`
+        alter table sessions add column thread_id text;
+        update sessions set thread_id = coalesce(thread_id, id);
+      `);
+    }
+
+    if (!columnNames.has("host_id")) {
+      this.db.exec(`
+        alter table sessions add column host_id text not null default 'local';
+      `);
+    }
+
+    if (!columnNames.has("host_label")) {
+      this.db.exec(`
+        alter table sessions add column host_label text not null default 'This Mac';
+      `);
+    }
+
+    if (!columnNames.has("is_remote")) {
+      this.db.exec(`
+        alter table sessions add column is_remote integer not null default 0;
       `);
     }
   }
@@ -669,6 +729,11 @@ function buildSessionFilterClause(filters: SessionFilters) {
     params.cwd = filters.cwd;
   }
 
+  if (filters.hostId) {
+    clauses.push("host_id = @hostId");
+    params.hostId = filters.hostId;
+  }
+
   return {
     clause: clauses.join(" and "),
     params,
@@ -682,6 +747,10 @@ function didCatalogEntryChange(
   const summary = entry.summary;
 
   return (
+    existing.threadId !== entry.threadId ||
+    existing.hostId !== entry.hostId ||
+    existing.hostLabel !== entry.hostLabel ||
+    Boolean(existing.isRemote) !== entry.isRemote ||
     existing.activePath !== entry.activePath ||
     existing.archivePath !== entry.archivePath ||
     existing.snapshotPath !== entry.snapshotPath ||

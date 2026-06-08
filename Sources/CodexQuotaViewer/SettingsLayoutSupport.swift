@@ -150,8 +150,16 @@ final class SettingsSidebarItemView: NSControl {
 
 @MainActor
 final class SettingsAdvancedView: NSView {
+    let syncCurrentRemoteButton = NSButton(title: "", target: nil, action: nil)
+    let repairLocalHistoryButton = NSButton(title: "", target: nil, action: nil)
+    let repairRemoteHistoryButton = NSButton(title: "", target: nil, action: nil)
+    let repairAllHistoryButton = NSButton(title: "", target: nil, action: nil)
+
     private let titleLabel = NSTextField(labelWithString: "")
-    private let placeholderLabel = NSTextField(labelWithString: "")
+    private let syncTitleLabel = NSTextField(labelWithString: "")
+    private let syncDetailLabel = NSTextField(labelWithString: "")
+    private let repairTitleLabel = NSTextField(labelWithString: "")
+    private let repairDetailLabel = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -166,25 +174,133 @@ final class SettingsAdvancedView: NSView {
 
     func applyLocalizedText() {
         titleLabel.stringValue = AppLocalization.localized(en: "Advanced", zh: "高级")
-        placeholderLabel.stringValue = AppLocalization.localized(en: "No advanced settings.", zh: "暂无高级设置。")
+        syncTitleLabel.stringValue = AppLocalization.localized(
+            en: "Remote host sync",
+            zh: "远程主机同步"
+        )
+        syncDetailLabel.stringValue = AppLocalization.localized(
+            en: "Push the current local auth.json and config.toml to the selected remote hosts.",
+            zh: "将当前本机 auth.json 和 config.toml 同步到已选择的远程主机。"
+        )
+        syncCurrentRemoteButton.title = AppLocalization.localized(
+            en: "Sync Current Local Config",
+            zh: "同步当前本机配置"
+        )
+        syncCurrentRemoteButton.setAccessibilityLabel(syncCurrentRemoteButton.title)
+        repairTitleLabel.stringValue = AppLocalization.localized(
+            en: "History metadata repair",
+            zh: "历史模型元数据修复"
+        )
+        repairDetailLabel.stringValue = AppLocalization.localized(
+            en: "Synchronize the current model/provider into Codex history database, rollout files, and session index.",
+            zh: "将当前 model/provider 同步到 Codex 历史数据库、rollout 文件和 session index。"
+        )
+        repairLocalHistoryButton.title = AppLocalization.localized(en: "Repair This Mac", zh: "修复本机")
+        repairRemoteHistoryButton.title = AppLocalization.localized(en: "Repair Remote Hosts", zh: "修复远程主机")
+        repairAllHistoryButton.title = AppLocalization.localized(en: "Repair All", zh: "全部修复")
+        repairLocalHistoryButton.setAccessibilityLabel(repairLocalHistoryButton.title)
+        repairRemoteHistoryButton.setAccessibilityLabel(repairRemoteHistoryButton.title)
+        repairAllHistoryButton.setAccessibilityLabel(repairAllHistoryButton.title)
+    }
+
+    func updateSyncCurrentRemoteAction(
+        isEnabled: Bool,
+        tooltip: String?
+    ) {
+        syncCurrentRemoteButton.isEnabled = isEnabled
+        syncCurrentRemoteButton.toolTip = tooltip
+    }
+
+    func updateHistoryRepairActions(
+        localEnabled: Bool,
+        remoteEnabled: Bool,
+        allEnabled: Bool,
+        localTooltip: String?,
+        remoteTooltip: String?,
+        allTooltip: String?
+    ) {
+        repairLocalHistoryButton.isEnabled = localEnabled
+        repairRemoteHistoryButton.isEnabled = remoteEnabled
+        repairAllHistoryButton.isEnabled = allEnabled
+        repairLocalHistoryButton.toolTip = localTooltip
+        repairRemoteHistoryButton.toolTip = remoteTooltip
+        repairAllHistoryButton.toolTip = allTooltip
     }
 
     private func setupUI() {
         translatesAutoresizingMaskIntoConstraints = false
         identifier = NSUserInterfaceItemIdentifier("settings.advanced.view")
+        syncCurrentRemoteButton.identifier = NSUserInterfaceItemIdentifier("settings.advanced.sync-current-remote")
+        repairLocalHistoryButton.identifier = NSUserInterfaceItemIdentifier("settings.advanced.repair-history.local")
+        repairRemoteHistoryButton.identifier = NSUserInterfaceItemIdentifier("settings.advanced.repair-history.remote")
+        repairAllHistoryButton.identifier = NSUserInterfaceItemIdentifier("settings.advanced.repair-history.all")
 
         titleLabel.font = .systemFont(ofSize: 24, weight: .semibold)
         titleLabel.textColor = .labelColor
 
-        let card = SettingsCardView()
-        placeholderLabel.font = .systemFont(ofSize: 14)
-        placeholderLabel.textColor = .secondaryLabelColor
-        placeholderLabel.maximumNumberOfLines = 0
-        placeholderLabel.lineBreakMode = .byWordWrapping
-        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(placeholderLabel)
+        let syncCard = SettingsCardView()
+        syncTitleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        syncTitleLabel.textColor = .labelColor
 
-        let stack = NSStackView(views: [titleLabel, card])
+        syncDetailLabel.font = .systemFont(ofSize: 13)
+        syncDetailLabel.textColor = .secondaryLabelColor
+        syncDetailLabel.maximumNumberOfLines = 0
+        syncDetailLabel.lineBreakMode = .byWordWrapping
+
+        syncCurrentRemoteButton.bezelStyle = .rounded
+        syncCurrentRemoteButton.controlSize = .regular
+
+        let textStack = NSStackView(views: [syncTitleLabel, syncDetailLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 4
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = NSStackView(views: [textStack, syncCurrentRemoteButton])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 18
+        row.translatesAutoresizingMaskIntoConstraints = false
+        syncCard.addSubview(row)
+
+        let repairCard = SettingsCardView()
+        repairTitleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        repairTitleLabel.textColor = .labelColor
+
+        repairDetailLabel.font = .systemFont(ofSize: 13)
+        repairDetailLabel.textColor = .secondaryLabelColor
+        repairDetailLabel.maximumNumberOfLines = 0
+        repairDetailLabel.lineBreakMode = .byWordWrapping
+
+        for button in [repairLocalHistoryButton, repairRemoteHistoryButton, repairAllHistoryButton] {
+            button.bezelStyle = .rounded
+            button.controlSize = .regular
+        }
+
+        let repairTextStack = NSStackView(views: [repairTitleLabel, repairDetailLabel])
+        repairTextStack.orientation = .vertical
+        repairTextStack.alignment = .leading
+        repairTextStack.spacing = 4
+        repairTextStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let repairButtonStack = NSStackView(views: [
+            repairLocalHistoryButton,
+            repairRemoteHistoryButton,
+            repairAllHistoryButton,
+        ])
+        repairButtonStack.orientation = .horizontal
+        repairButtonStack.alignment = .centerY
+        repairButtonStack.spacing = 8
+        repairButtonStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let repairRow = NSStackView(views: [repairTextStack, repairButtonStack])
+        repairRow.orientation = .horizontal
+        repairRow.alignment = .centerY
+        repairRow.spacing = 18
+        repairRow.translatesAutoresizingMaskIntoConstraints = false
+        repairCard.addSubview(repairRow)
+
+        let stack = NSStackView(views: [titleLabel, syncCard, repairCard])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -196,12 +312,24 @@ final class SettingsAdvancedView: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
-            card.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            syncCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            repairCard.widthAnchor.constraint(equalTo: stack.widthAnchor),
 
-            placeholderLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
-            placeholderLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
-            placeholderLabel.topAnchor.constraint(equalTo: card.topAnchor, constant: 18),
-            placeholderLabel.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -18),
+            row.leadingAnchor.constraint(equalTo: syncCard.leadingAnchor, constant: 20),
+            row.trailingAnchor.constraint(equalTo: syncCard.trailingAnchor, constant: -20),
+            row.topAnchor.constraint(equalTo: syncCard.topAnchor, constant: 18),
+            row.bottomAnchor.constraint(equalTo: syncCard.bottomAnchor, constant: -18),
+            textStack.widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
+            syncCurrentRemoteButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 170),
+
+            repairRow.leadingAnchor.constraint(equalTo: repairCard.leadingAnchor, constant: 20),
+            repairRow.trailingAnchor.constraint(equalTo: repairCard.trailingAnchor, constant: -20),
+            repairRow.topAnchor.constraint(equalTo: repairCard.topAnchor, constant: 18),
+            repairRow.bottomAnchor.constraint(equalTo: repairCard.bottomAnchor, constant: -18),
+            repairTextStack.widthAnchor.constraint(greaterThanOrEqualToConstant: 220),
+            repairLocalHistoryButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 84),
+            repairRemoteHistoryButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 116),
+            repairAllHistoryButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 84),
         ])
     }
 }

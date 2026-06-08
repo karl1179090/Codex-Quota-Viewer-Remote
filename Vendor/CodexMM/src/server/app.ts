@@ -5,17 +5,29 @@ import express from "express";
 import type {
   ApiErrorResponse,
   BatchSessionActionRequest,
+  RemoteSessionImportRequest,
   RestoreRequest,
+  SessionSyncRequest,
   SessionFilters,
   UiConfigResponse,
 } from "../shared/contracts";
 import { AppError } from "./lib/errors";
 import { createSessionManager } from "./services/session-manager";
 import { uniqueSessionIds } from "./services/session-manager-helpers";
+import type {
+  RemoteSessionFileReader,
+  RemoteSessionFileWriter,
+  RemoteSessionPreviewer,
+  RemoteSessionPuller,
+} from "./services/remote-session-importer";
 
 type AppConfig = {
   codexHome: string;
   managerHome: string;
+  remoteSessionPuller?: RemoteSessionPuller;
+  remoteSessionPreviewer?: RemoteSessionPreviewer;
+  remoteSessionFileReader?: RemoteSessionFileReader;
+  remoteSessionFileWriter?: RemoteSessionFileWriter;
   readUiConfig?: () => UiConfigResponse;
 };
 
@@ -39,6 +51,7 @@ export function createApp(config: AppConfig) {
       const filters: SessionFilters = {
         query: toOptionalString(request.query.query),
         cwd: toOptionalString(request.query.cwd),
+        hostId: toOptionalString(request.query.hostId),
         status: toOptionalString(request.query.status) as SessionFilters["status"],
       };
 
@@ -72,6 +85,26 @@ export function createApp(config: AppConfig) {
   app.post("/api/sessions/rescan", async (_request, response, next) => {
     try {
       response.json({ sessions: await manager.rescan() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/remote-sessions/import", async (request, response, next) => {
+    try {
+      response.json(
+        await manager.importRemoteSessions(readRemoteImportRequest(request.body)),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/remote-sessions/preview", async (request, response, next) => {
+    try {
+      response.json(
+        await manager.previewRemoteSessions(readRemoteImportRequest(request.body)),
+      );
     } catch (error) {
       next(error);
     }
@@ -151,6 +184,16 @@ export function createApp(config: AppConfig) {
     }
   });
 
+  app.post("/api/sessions/:id/sync", async (request, response, next) => {
+    try {
+      response.json(
+        await manager.syncSession(request.params.id, readSessionSyncRequest(request.body)),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.delete("/api/sessions/:id", async (request, response, next) => {
     try {
       response.json(await manager.deleteSession(request.params.id));
@@ -195,6 +238,34 @@ export function createApp(config: AppConfig) {
   });
 
   return app;
+}
+
+function readSessionSyncRequest(body: unknown): SessionSyncRequest {
+  const payload = body as Partial<SessionSyncRequest> | undefined;
+  const target = payload?.target;
+
+  if (target?.kind === "local") {
+    return {
+      target: {
+        kind: "local",
+      },
+    };
+  }
+
+  if (target?.kind === "remote") {
+    return {
+      target: {
+        kind: "remote",
+        sshTarget: typeof target.sshTarget === "string" ? target.sshTarget : "",
+        codexHomePath:
+          typeof target.codexHomePath === "string" ? target.codexHomePath : undefined,
+      },
+    };
+  }
+
+  return {
+    target: undefined as unknown as SessionSyncRequest["target"],
+  };
 }
 
 export function createUiConfigReader(): () => UiConfigResponse {
@@ -251,4 +322,14 @@ function readBatchRequest(body: unknown): BatchSessionActionRequest {
     : [];
 
   return { sessionIds };
+}
+
+function readRemoteImportRequest(body: unknown): RemoteSessionImportRequest {
+  const payload = body as Partial<RemoteSessionImportRequest> | undefined;
+
+  return {
+    sshTarget: typeof payload?.sshTarget === "string" ? payload.sshTarget : "",
+    codexHomePath:
+      typeof payload?.codexHomePath === "string" ? payload.codexHomePath : undefined,
+  };
 }

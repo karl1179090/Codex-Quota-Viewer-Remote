@@ -117,17 +117,32 @@ export default function App() {
                 loading={browser.loadingSessions}
                 search={browser.search}
                 status={browser.status}
+                hostId={browser.hostId}
+                hostOptions={browser.hostOptions}
+                remoteHost={browser.remoteHost}
+                remoteCodexHome={browser.remoteCodexHome}
                 selectedId={browser.focusedSessionId}
                 selectedIds={browser.checkedSessionIds}
                 onSearchChange={browser.setSearch}
                 onStatusChange={browser.setStatus}
+                onHostChange={browser.setHostId}
+                onRemoteHostChange={browser.setRemoteHost}
+                onRemoteCodexHomeChange={browser.setRemoteCodexHome}
                 onRescan={() => void browser.rescanIndex()}
+                onImportRemote={() =>
+                  void browser.runAction("import-remote", browser.importRemoteIndex)
+                }
+                onPreviewRemote={() =>
+                  void browser.runAction("preview-remote", browser.previewRemoteIndex)
+                }
                 onRepairOfficial={() =>
                   void browser.runAction(
                     "repair-official-all",
                     browser.repairAllOfficialThreads,
                   )
                 }
+                importingRemote={browser.busyAction === "import-remote"}
+                viewingRemote={browser.busyAction === "preview-remote"}
                 repairingOfficial={browser.busyAction === "repair-official-all"}
                 busy={!!browser.busyAction}
                 onSelect={browser.selectSession}
@@ -146,6 +161,8 @@ export default function App() {
                 loadingDetail={browser.loadingDetail}
                 loadingTimeline={browser.loadingTimeline}
                 targetCwd={browser.targetCwd}
+                syncTargetHost={browser.syncTargetHost}
+                syncTargetCodexHome={browser.syncTargetCodexHome}
                 restoreMode={browser.restoreMode}
                 restoreTargetError={browser.restoreTargetError}
                 feedback={browser.feedback}
@@ -165,6 +182,8 @@ export default function App() {
                 showBackToList={browser.isNarrowViewport && browser.focusedSessionId !== null}
                 onBackToList={browser.showSessionList}
                 onTargetCwdChange={browser.setTargetCwd}
+                onSyncTargetHostChange={browser.setSyncTargetHost}
+                onSyncTargetCodexHomeChange={browser.setSyncTargetCodexHome}
                 onRestoreModeChange={browser.setRestoreMode}
                 onSelectAllVisible={() =>
                   browser.setCheckedSessionIds(
@@ -185,6 +204,12 @@ export default function App() {
                 onRestoreCurrentToDirectory={() => void browser.restoreCurrentToDirectory()}
                 onArchiveCurrent={() =>
                   void browser.runAction("archive-current", browser.archiveCurrent)
+                }
+                onSyncCurrentToLocal={() =>
+                  void browser.runAction("sync-local", browser.syncCurrentToLocal)
+                }
+                onSyncCurrentToRemote={() =>
+                  void browser.runAction("sync-remote", browser.syncCurrentToRemote)
                 }
                 onRepairCurrentOfficial={() =>
                   void browser.runAction(

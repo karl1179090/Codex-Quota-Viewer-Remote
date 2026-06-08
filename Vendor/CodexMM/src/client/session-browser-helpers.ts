@@ -33,8 +33,13 @@ const STATIC_ERROR_LOCALIZERS: Partial<Record<ApiErrorCode, (copy: TranslationSe
   rebind_requires_target: (copy) => copy.errors.rebindRequiresTarget,
   active_session_must_be_deleted_before_purge: (copy) =>
     copy.errors.activeSessionMustBeDeletedBeforePurge,
+  invalid_remote_host: (copy) => copy.errors.invalidRemoteHost,
   session_has_no_file_to_delete: (copy) => copy.errors.sessionHasNoFileToDelete,
   session_is_not_restorable: (copy) => copy.errors.sessionIsNotRestorable,
+  remote_session_import_failed: (copy) => copy.errors.remoteSessionImportFailed,
+  remote_session_tar_failed: (copy) => copy.errors.remoteSessionImportFailed,
+  remote_ssh_failed: (copy) => copy.errors.remoteSSHFailed,
+  remote_sync_target_required: (copy) => copy.errors.remoteSyncTargetRequired,
   unsupported_restore_mode: (copy) => copy.errors.unsupportedRestoreMode,
   internal_server_error: (copy) => copy.errors.unknown,
   unknown_server_error: (copy) => copy.errors.unknown,
@@ -72,12 +77,14 @@ export function mergeSessionList(
 export function buildFilters(
   search: string,
   status: SessionStatus,
+  hostId?: string,
 ): SessionFilters {
   const query = search.trim();
 
   return {
     query: query.length > 0 ? query : undefined,
     status,
+    hostId: hostId && hostId !== "all" ? hostId : undefined,
   };
 }
 
@@ -85,9 +92,10 @@ export function filterVisibleSessions(
   sessions: SessionRecord[],
   search: string,
   status: SessionStatus,
+  hostId = "all",
 ) {
   const normalizedQuery = search.trim().toLowerCase();
-  const visible = filterSessionsByStatus(sessions, status);
+  const visible = filterSessionsByHost(filterSessionsByStatus(sessions, status), hostId);
 
   if (!normalizedQuery) {
     return visible;
@@ -96,6 +104,8 @@ export function filterVisibleSessions(
   return visible.filter((session) =>
     [
       session.id,
+      session.threadId,
+      session.hostLabel || "This Mac",
       session.cwd,
       session.userPromptExcerpt,
       session.latestAgentMessageExcerpt,
@@ -211,6 +221,14 @@ function filterSessionsByStatus(
   return sessions.filter((session) =>
     status === "archived" ? isArchivedViewStatus(session.status) : session.status === status,
   );
+}
+
+function filterSessionsByHost(sessions: SessionRecord[], hostId: string) {
+  if (!hostId || hostId === "all") {
+    return sessions;
+  }
+
+  return sessions.filter((session) => (session.hostId || "local") === hostId);
 }
 
 function localizeRestoreTargetError(message: string, copy: TranslationSet) {
@@ -351,6 +369,10 @@ function readErrorDetails(error: unknown): ApiErrorDetails | undefined {
     normalized.sessionId = (details as { sessionId: string }).sessionId;
   }
 
+  if (typeof (details as { host?: unknown }).host === "string") {
+    normalized.host = (details as { host: string }).host;
+  }
+
   const label = (details as { label?: unknown }).label;
   if (label === "active" || label === "archive" || label === "snapshot") {
     normalized.label = label;
@@ -401,6 +423,10 @@ function localizeOfficialSummary(
   officialState: SessionOfficialState,
   copy: TranslationSet,
 ) {
+  if (officialState.status === "remote_copy") {
+    return copy.detail.officialSummaryRemoteCopy;
+  }
+
   if (!officialState.canAppearInCodex) {
     return officialState.status === "repair_needed"
       ? copy.detail.officialSummaryHiddenRepairNeeded

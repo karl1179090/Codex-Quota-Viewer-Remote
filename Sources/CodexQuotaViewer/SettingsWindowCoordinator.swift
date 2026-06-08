@@ -14,6 +14,8 @@ protocol SettingsWindowControlling: AnyObject {
     var onRenameAccount: ((String) -> Void)? { get set }
     var onForgetAccount: ((String) -> Void)? { get set }
     var onOpenVaultFolder: (() -> Void)? { get set }
+    var onSyncCurrentRemoteConfig: (() -> Void)? { get set }
+    var onRepairHistoryMetadata: ((HistoryMetadataRepairScope) -> Void)? { get set }
     var onWindowClosed: (() -> Void)? { get set }
 
     func update(
@@ -117,6 +119,8 @@ final class SettingsWindowCoordinator {
         controller.onRenameAccount = callbacks.onRenameAccount
         controller.onForgetAccount = callbacks.onForgetAccount
         controller.onOpenVaultFolder = callbacks.onOpenVaultFolder
+        controller.onSyncCurrentRemoteConfig = callbacks.onSyncCurrentRemoteConfig
+        controller.onRepairHistoryMetadata = callbacks.onRepairHistoryMetadata
         controller.onWindowClosed = callbacks.onWindowClosed
     }
 }

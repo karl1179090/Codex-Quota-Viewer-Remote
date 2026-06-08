@@ -63,7 +63,20 @@ export function buildSessionRoots(codexHome: string, managerHome: string) {
     sessionsRoot: path.join(codexHome, "sessions"),
     archiveRoot: path.join(codexHome, "archived_sessions"),
     snapshotRoot: path.join(managerHome, "snapshots"),
+    remoteRoot: path.join(managerHome, "remote_hosts"),
     databasePath: path.join(managerHome, "index.db"),
+  };
+}
+
+export function buildRemoteSessionRoots(remoteRoot: string, hostId: string) {
+  const hostRoot = path.join(remoteRoot, hostId);
+
+  return {
+    hostRoot,
+    sessionsRoot: path.join(hostRoot, "sessions"),
+    archiveRoot: path.join(hostRoot, "archived_sessions"),
+    snapshotRoot: path.join(hostRoot, "snapshots"),
+    manifestPath: path.join(hostRoot, "host.json"),
   };
 }
 

@@ -239,6 +239,28 @@ func codexRPCChannelReturnsInvalidResponseWhenOutputEndsBeforeProcessExits() asy
 }
 
 @Test
+func sendCodexRPCRequestReportsClosedInputInsteadOfCrashingOnSIGPIPE() throws {
+    installRuntimeSignalHandlers()
+
+    let pipe = Pipe()
+    try pipe.fileHandleForReading.close()
+    defer {
+        try? pipe.fileHandleForWriting.close()
+    }
+
+    do {
+        try sendCodexRPCRequest(id: "1", method: "initialize", params: [:], to: pipe.fileHandleForWriting)
+        Issue.record("Expected writing to a closed app-server stdin to fail.")
+    } catch let error as CodexRPCError {
+        guard case .invalidResponse(let message) = error else {
+            Issue.record("Expected invalidResponse, got \(error).")
+            return
+        }
+        #expect(message.contains("app-server input closed"))
+    }
+}
+
+@Test
 func codexRPCChannelDeinitCleansUpProcessAndTemporaryHomeWithoutExplicitInvalidate() throws {
     let scriptRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("CodexRPCClientTests-DeinitCleanup-\(UUID().uuidString)", isDirectory: true)

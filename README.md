@@ -2,7 +2,7 @@ English | [中文](README.zh-CN.md)
 
 # Codex Quota Viewer
 
-> Stable release: `1.3.4`
+> Stable release: `1.3.5`
 >
 > 1.3.4 hotfix:
 > - Restarts remote Codex app-server processes after remote account sync so they reload the switched account.

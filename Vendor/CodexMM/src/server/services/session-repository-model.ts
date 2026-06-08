@@ -35,6 +35,11 @@ export type TimelineItemRow = {
 };
 
 export type CatalogSessionEntry = {
+  recordId: string;
+  threadId: string;
+  hostId: string;
+  hostLabel: string;
+  isRemote: boolean;
   summary: SessionFileSummary;
   timeline: SessionTimelineItem[];
   activePath: string | null;
@@ -51,6 +56,10 @@ export type SessionMutation = Partial<
     | "archivePath"
     | "snapshotPath"
     | "originalRelativePath"
+    | "threadId"
+    | "hostId"
+    | "hostLabel"
+    | "isRemote"
     | "cwd"
     | "startedAt"
     | "originator"
@@ -70,6 +79,10 @@ export type SessionMutation = Partial<
 export function mapSessionRow(row: SessionRow): SessionRecord {
   return {
     id: row.id,
+    threadId: row.threadId || row.id,
+    hostId: row.hostId || "local",
+    hostLabel: row.hostLabel || "This Mac",
+    isRemote: Boolean(row.isRemote),
     filePath: row.filePath,
     activePath: row.activePath,
     archivePath: row.archivePath,

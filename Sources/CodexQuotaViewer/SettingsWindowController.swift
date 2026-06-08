@@ -44,6 +44,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var onRenameAccount: ((String) -> Void)?
     var onForgetAccount: ((String) -> Void)?
     var onOpenVaultFolder: (() -> Void)?
+    var onSyncCurrentRemoteConfig: (() -> Void)?
+    var onRepairHistoryMetadata: ((HistoryMetadataRepairScope) -> Void)?
     var onWindowClosed: (() -> Void)?
 
     private var settings: AppSettings
@@ -227,6 +229,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         accountsView.addAPIButton.action = #selector(addAPIClicked)
         accountsView.openVaultButton.target = self
         accountsView.openVaultButton.action = #selector(openVaultClicked)
+
+        advancedView.syncCurrentRemoteButton.target = self
+        advancedView.syncCurrentRemoteButton.action = #selector(syncCurrentRemoteConfigClicked)
+        advancedView.repairLocalHistoryButton.target = self
+        advancedView.repairLocalHistoryButton.action = #selector(repairLocalHistoryClicked)
+        advancedView.repairRemoteHistoryButton.target = self
+        advancedView.repairRemoteHistoryButton.action = #selector(repairRemoteHistoryClicked)
+        advancedView.repairAllHistoryButton.target = self
+        advancedView.repairAllHistoryButton.action = #selector(repairAllHistoryClicked)
     }
 
     private func makeAccountsTableController() -> SettingsAccountsTableController {
@@ -268,6 +279,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         remoteView.remoteSyncSwitch.state = settings.remoteSwitch.enabled ? .on : .off
         applyRemoteTargetsToControls(settings.remoteSwitch.trimmedSSHTargets)
         remoteView.remotePathField.stringValue = settings.remoteSwitch.codexHomePath
+        updateAdvancedActionsAvailability()
     }
 
     private func applyAccountPanelState() {
@@ -294,6 +306,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             ? AppLocalization.localized(en: "Cancel the current ChatGPT login.", zh: "取消当前 ChatGPT 登录。")
             : nil
         accountsView.openVaultButton.isEnabled = true
+        updateAdvancedActionsAvailability()
         accountsTableController.update(state: accountPanelState)
         window?.contentView?.layoutSubtreeIfNeeded()
         accountsTableController.refreshLayout()
@@ -361,6 +374,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             selectedRemoteConfigHosts() + remoteView.customTargetField.targets
         )
         settings.remoteSwitch.codexHomePath = remoteView.remotePathField.stringValue
+        updateAdvancedActionsAvailability()
         onSettingsChanged?(settings)
     }
 
@@ -436,6 +450,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         onOpenVaultFolder?()
     }
 
+    @objc
+    private func syncCurrentRemoteConfigClicked() {
+        onSyncCurrentRemoteConfig?()
+    }
+
+    @objc
+    private func repairLocalHistoryClicked() {
+        onRepairHistoryMetadata?(.local)
+    }
+
+    @objc
+    private func repairRemoteHistoryClicked() {
+        onRepairHistoryMetadata?(.remote)
+    }
+
+    @objc
+    private func repairAllHistoryClicked() {
+        onRepairHistoryMetadata?(.all)
+    }
+
     func windowWillClose(_ notification: Notification) {
         onWindowClosed?()
     }
@@ -482,6 +516,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func selectedRemoteConfigHosts() -> [String] {
         sshConfigHosts.filter { selectedSSHConfigHosts.contains($0) }
+    }
+
+    private func updateAdvancedActionsAvailability() {
+        let hasRemoteTargets = !settings.remoteSwitch.trimmedSSHTargets.isEmpty
+        let remoteActionEnabled = accountPanelState.actionsEnabled && hasRemoteTargets
+        let localActionEnabled = accountPanelState.actionsEnabled
+        let tooltip: String?
+        if !accountPanelState.actionsEnabled {
+            tooltip = AppLocalization.localized(
+                en: "Finish the current account operation before using advanced actions.",
+                zh: "请先完成当前账号操作，再使用高级操作。"
+            )
+        } else if !hasRemoteTargets {
+            tooltip = AppLocalization.localized(
+                en: "Select at least one remote host in the Remote settings page first.",
+                zh: "请先在远程设置页选择至少一台远程主机。"
+            )
+        } else {
+            tooltip = nil
+        }
+
+        advancedView.updateSyncCurrentRemoteAction(
+            isEnabled: remoteActionEnabled,
+            tooltip: tooltip
+        )
+        advancedView.updateHistoryRepairActions(
+            localEnabled: localActionEnabled,
+            remoteEnabled: remoteActionEnabled,
+            allEnabled: remoteActionEnabled,
+            localTooltip: accountPanelState.actionsEnabled ? nil : tooltip,
+            remoteTooltip: tooltip,
+            allTooltip: tooltip
+        )
     }
 
     private func renderRemoteHostRows() {

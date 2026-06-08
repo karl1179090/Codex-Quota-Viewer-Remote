@@ -56,9 +56,12 @@ export function buildFallbackRelativePath(startedAt: string, sessionId: string) 
 }
 
 export function resolveSessionRelativePath(
-  record: Pick<SessionRecord, "originalRelativePath" | "startedAt" | "id">,
+  record: Pick<SessionRecord, "originalRelativePath" | "startedAt" | "id" | "threadId">,
 ) {
-  return record.originalRelativePath ?? buildFallbackRelativePath(record.startedAt, record.id);
+  return (
+    record.originalRelativePath ??
+    buildFallbackRelativePath(record.startedAt, record.threadId)
+  );
 }
 
 export function uniqueSessionIds(

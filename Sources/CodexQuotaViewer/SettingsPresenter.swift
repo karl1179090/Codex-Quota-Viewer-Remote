@@ -11,7 +11,35 @@ struct SettingsPresenterCallbacks {
     let onRenameAccount: (String) -> Void
     let onForgetAccount: (String) -> Void
     let onOpenVaultFolder: () -> Void
+    let onSyncCurrentRemoteConfig: () -> Void
+    let onRepairHistoryMetadata: (HistoryMetadataRepairScope) -> Void
     let onWindowClosed: () -> Void
+
+    init(
+        onSettingsChanged: @escaping (AppSettings) -> Void = { _ in },
+        onAddChatGPTAccount: @escaping () -> Void = {},
+        onCancelChatGPTLogin: @escaping () -> Void = {},
+        onAddAPIAccount: @escaping () -> Void = {},
+        onActivateAccount: @escaping (String) -> Void = { _ in },
+        onRenameAccount: @escaping (String) -> Void = { _ in },
+        onForgetAccount: @escaping (String) -> Void = { _ in },
+        onOpenVaultFolder: @escaping () -> Void = {},
+        onSyncCurrentRemoteConfig: @escaping () -> Void = {},
+        onRepairHistoryMetadata: @escaping (HistoryMetadataRepairScope) -> Void = { _ in },
+        onWindowClosed: @escaping () -> Void = {}
+    ) {
+        self.onSettingsChanged = onSettingsChanged
+        self.onAddChatGPTAccount = onAddChatGPTAccount
+        self.onCancelChatGPTLogin = onCancelChatGPTLogin
+        self.onAddAPIAccount = onAddAPIAccount
+        self.onActivateAccount = onActivateAccount
+        self.onRenameAccount = onRenameAccount
+        self.onForgetAccount = onForgetAccount
+        self.onOpenVaultFolder = onOpenVaultFolder
+        self.onSyncCurrentRemoteConfig = onSyncCurrentRemoteConfig
+        self.onRepairHistoryMetadata = onRepairHistoryMetadata
+        self.onWindowClosed = onWindowClosed
+    }
 }
 
 @MainActor
@@ -84,6 +112,8 @@ final class SettingsPresenter {
         controller.onRenameAccount = callbacks.onRenameAccount
         controller.onForgetAccount = callbacks.onForgetAccount
         controller.onOpenVaultFolder = callbacks.onOpenVaultFolder
+        controller.onSyncCurrentRemoteConfig = callbacks.onSyncCurrentRemoteConfig
+        controller.onRepairHistoryMetadata = callbacks.onRepairHistoryMetadata
         controller.onWindowClosed = callbacks.onWindowClosed
     }
 }

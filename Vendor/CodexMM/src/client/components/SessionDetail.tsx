@@ -22,6 +22,8 @@ type SessionDetailProps = {
   loadingDetail: boolean;
   loadingTimeline: boolean;
   targetCwd: string;
+  syncTargetHost: string;
+  syncTargetCodexHome: string;
   restoreMode: RestoreMode;
   restoreTargetError: string | null;
   feedback: string | null;
@@ -39,6 +41,8 @@ type SessionDetailProps = {
   showBackToList: boolean;
   onBackToList: () => void;
   onTargetCwdChange: (value: string) => void;
+  onSyncTargetHostChange: (value: string) => void;
+  onSyncTargetCodexHomeChange: (value: string) => void;
   onRestoreModeChange: (value: RestoreMode) => void;
   onSelectAllVisible: () => void;
   onClearSelection: () => void;
@@ -48,6 +52,8 @@ type SessionDetailProps = {
   onEmptyTrash: () => void;
   onRestoreCurrentToDirectory: () => void;
   onArchiveCurrent: () => void;
+  onSyncCurrentToLocal: () => void;
+  onSyncCurrentToRemote: () => void;
   onRepairCurrentOfficial: () => void;
   onCopyCommand: () => void;
   onLoadMoreTimeline: () => void;
@@ -58,6 +64,8 @@ export function SessionDetail({
   loadingDetail,
   loadingTimeline,
   targetCwd,
+  syncTargetHost,
+  syncTargetCodexHome,
   restoreMode,
   restoreTargetError,
   feedback,
@@ -75,6 +83,8 @@ export function SessionDetail({
   showBackToList,
   onBackToList,
   onTargetCwdChange,
+  onSyncTargetHostChange,
+  onSyncTargetCodexHomeChange,
   onRestoreModeChange,
   onSelectAllVisible,
   onClearSelection,
@@ -84,6 +94,8 @@ export function SessionDetail({
   onEmptyTrash,
   onRestoreCurrentToDirectory,
   onArchiveCurrent,
+  onSyncCurrentToLocal,
+  onSyncCurrentToRemote,
   onRepairCurrentOfficial,
   onCopyCommand,
   onLoadMoreTimeline,
@@ -224,6 +236,7 @@ export function SessionDetail({
                 ) : null}
                 <div className="reader-summary__meta">
                   <span>{formatSessionDate(detail.record.startedAt, language)}</span>
+                  <span>{detail.record.hostLabel || "This Mac"}</span>
                   <span>{detail.record.originator}</span>
                   <span>{detail.record.source}</span>
                   <span>{detail.record.modelProvider}</span>
@@ -304,9 +317,50 @@ export function SessionDetail({
                     type="button"
                     className="compact-button compact-button--ghost"
                     onClick={onRepairCurrentOfficial}
-                    disabled={!!busyAction}
+                    disabled={!!busyAction || detail.record.isRemote}
                   >
                     {copy.detail.repairCurrentThread}
+                  </button>
+                </div>
+              </div>
+
+              <div className="session-sync-panel">
+                <label className="session-sync-panel__field">
+                  <span>{copy.detail.syncTargetHost}</span>
+                  <input
+                    aria-label={copy.detail.syncTargetHost}
+                    className="weui-input detail-input"
+                    value={syncTargetHost}
+                    onChange={(event) => onSyncTargetHostChange(event.target.value)}
+                    placeholder={copy.detail.syncTargetHostPlaceholder}
+                  />
+                </label>
+                <label className="session-sync-panel__field">
+                  <span>{copy.detail.syncTargetCodexHome}</span>
+                  <input
+                    aria-label={copy.detail.syncTargetCodexHome}
+                    className="weui-input detail-input"
+                    value={syncTargetCodexHome}
+                    onChange={(event) => onSyncTargetCodexHomeChange(event.target.value)}
+                    placeholder="~/.codex"
+                  />
+                </label>
+                <div className="session-sync-panel__buttons">
+                  <button
+                    type="button"
+                    className="compact-button"
+                    onClick={onSyncCurrentToRemote}
+                    disabled={!!busyAction}
+                  >
+                    {copy.detail.syncToRemote}
+                  </button>
+                  <button
+                    type="button"
+                    className="compact-button compact-button--ghost"
+                    onClick={onSyncCurrentToLocal}
+                    disabled={!!busyAction}
+                  >
+                    {copy.detail.syncToLocal}
                   </button>
                 </div>
               </div>
@@ -434,6 +488,8 @@ function labelForOfficialState(
       return copy.officialStates.repair_needed;
     case "hidden":
       return copy.officialStates.hidden;
+    case "remote_copy":
+      return copy.officialStates.remote_copy;
     default:
       return copy.officialStates.unknown;
   }

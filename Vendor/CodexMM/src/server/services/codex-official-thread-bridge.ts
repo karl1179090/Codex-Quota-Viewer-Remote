@@ -14,6 +14,7 @@ import {
   type CodexThreadUpsert,
 } from "./codex-thread-state-repository";
 import { readSessionMetaSnapshot } from "./jsonl-session-parser";
+import { readThreadId } from "./session-hosts";
 import { pathExists } from "./session-manager-helpers";
 
 const DEFAULT_SANDBOX_POLICY = "workspace-write";
@@ -29,8 +30,17 @@ export class CodexOfficialThreadBridge {
   }
 
   async inspectSession(record: SessionRecord): Promise<SessionOfficialState> {
-    const thread = this.threads.getThread(record.id);
-    const indexEntry = await this.sessionIndex.getEntry(record.id);
+    if (record.isRemote) {
+      return {
+        status: "remote_copy",
+        canAppearInCodex: false,
+        issueCodes: [],
+      };
+    }
+
+    const threadId = readThreadId(record);
+    const thread = this.threads.getThread(threadId);
+    const indexEntry = await this.sessionIndex.getEntry(threadId);
     const desired = buildDesiredProjection(record);
 
     if (!desired) {
@@ -75,8 +85,9 @@ export class CodexOfficialThreadBridge {
       cleanupBroken?: boolean;
     } = {},
   ): Promise<OfficialRepairStats> {
-    const selectedIds = new Set(options.sessionIds ?? records.map((record) => record.id));
-    const selectedRecords = records.filter((record) => selectedIds.has(record.id));
+    const localRecords = records.filter((record) => !record.isRemote);
+    const selectedIds = new Set(options.sessionIds ?? localRecords.map((record) => record.id));
+    const selectedRecords = localRecords.filter((record) => selectedIds.has(record.id));
     const sessionIndexMap = new Map(
       (await this.sessionIndex.listEntries()).map((entry) => [entry.id, entry]),
     );
@@ -84,10 +95,11 @@ export class CodexOfficialThreadBridge {
 
     for (const record of selectedRecords) {
       const desired = buildDesiredProjection(record);
+      const threadId = readThreadId(record);
 
       if (!desired) {
-        const removedThread = this.threads.deleteThread(record.id);
-        const removedIndex = sessionIndexMap.delete(record.id);
+        const removedThread = this.threads.deleteThread(threadId);
+        const removedIndex = sessionIndexMap.delete(threadId);
 
         if (removedThread || removedIndex) {
           stats.hiddenSnapshotOnlySessions += 1;
@@ -100,7 +112,7 @@ export class CodexOfficialThreadBridge {
         continue;
       }
 
-      const currentThread = this.threads.getThread(record.id);
+      const currentThread = this.threads.getThread(threadId);
       const nextThread = await this.buildThreadUpsert(record, desired, currentThread);
       const threadResult = this.threads.upsertThread(nextThread);
       const sessionIndexResult = upsertSessionIndexEntry(sessionIndexMap, {
@@ -149,7 +161,7 @@ export class CodexOfficialThreadBridge {
     const updatedAt = toUnixSeconds(record.updatedAt);
 
     return {
-      id: record.id,
+      id: readThreadId(record),
       rolloutPath: desired.rolloutPath,
       createdAt: existing?.createdAt ?? createdAt,
       updatedAt,
@@ -179,7 +191,8 @@ export class CodexOfficialThreadBridge {
     sessionIndexMap: Map<string, CodexSessionIndexEntry>,
     stats: OfficialRepairStats,
   ) {
-    const managedIds = new Set(records.map((record) => record.id));
+    const localRecords = records.filter((record) => !record.isRemote);
+    const managedIds = new Set(localRecords.map((record) => readThreadId(record)));
     const officialThreads = this.threads.listThreads();
 
     for (const thread of officialThreads) {
@@ -207,7 +220,7 @@ export class CodexOfficialThreadBridge {
         continue;
       }
 
-      const managed = records.find((record) => record.id === entry.id);
+      const managed = localRecords.find((record) => readThreadId(record) === entry.id);
 
       if (managed && buildDesiredProjection(managed)) {
         continue;
@@ -240,7 +253,7 @@ function buildDesiredProjection(record: SessionRecord): DesiredProjection | null
   }
 
   return {
-    id: record.id,
+    id: readThreadId(record),
     rolloutPath,
     archived: record.status === "active" ? 0 : 1,
     threadName: buildThreadName(record),

@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -7,6 +7,7 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { createApp, createUiConfigReader } from "../../src/server/app";
+import { collectSessions } from "../../src/server/services/session-manager-helpers";
 import {
   createHarness,
   readOfficialThread,
@@ -45,6 +46,152 @@ describe("createApp", () => {
 
     expect(response.body.sessions).toHaveLength(1);
     expect(response.body.sessions[0].id).toBe("http-list");
+  });
+
+  test("imports remote sessions over HTTP", async () => {
+    const remoteCodexHome = path.join(harness.managerHome, "remote-http-codex");
+    await seedSession(remoteCodexHome, {
+      id: "http-remote-session",
+      cwd: "/srv/http-remote",
+      startedAt: "2026-03-29T10:16:37.087Z",
+      firstUserMessage: "HTTP 拉取远端会话",
+      latestAgentMessage: "远端会话已经保存。",
+      registerOfficialThread: false,
+      registerSessionIndex: false,
+    });
+
+    const app = createApp({
+      codexHome: harness.codexHome,
+      managerHome: harness.managerHome,
+      remoteSessionPuller: async ({ destinationRoot }) => {
+        await cp(path.join(remoteCodexHome, "sessions"), destinationRoot, {
+          recursive: true,
+          force: true,
+        });
+
+        return {
+          copiedFileCount: 1,
+          copiedSessionCount: 1,
+        };
+      },
+    });
+
+    const response = await request(app)
+      .post("/api/remote-sessions/import")
+      .send({
+        sshTarget: "codex-box",
+        codexHomePath: "~/.codex",
+      })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      hostLabel: "codex-box",
+      importedCount: 1,
+      copiedFileCount: 1,
+    });
+    expect(response.body.sessions[0]).toMatchObject({
+      threadId: "http-remote-session",
+      hostLabel: "codex-box",
+      isRemote: true,
+      cwd: "/srv/http-remote",
+    });
+  });
+
+  test("previews remote sessions over HTTP without persistent import", async () => {
+    const remoteCodexHome = path.join(harness.managerHome, "remote-http-preview");
+    await seedSession(remoteCodexHome, {
+      id: "http-direct-remote",
+      cwd: "/srv/http-direct",
+      startedAt: "2026-03-29T10:16:37.087Z",
+      firstUserMessage: "HTTP 直接查看远端",
+      latestAgentMessage: "只返回临时索引。",
+      registerOfficialThread: false,
+      registerSessionIndex: false,
+    });
+
+    const app = createApp({
+      codexHome: harness.codexHome,
+      managerHome: harness.managerHome,
+      remoteSessionPreviewer: () => collectRemotePreviewEntries(remoteCodexHome),
+    });
+
+    const response = await request(app)
+      .post("/api/remote-sessions/preview")
+      .send({
+        sshTarget: "codex-box",
+        codexHomePath: "~/.codex",
+      })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      hostLabel: "codex-box",
+      previewedCount: 1,
+    });
+    expect(response.body.sessions[0]).toMatchObject({
+      threadId: "http-direct-remote",
+      id: `direct:${response.body.hostId}:http-direct-remote`,
+      hostLabel: "codex-box",
+      isRemote: true,
+      cwd: "/srv/http-direct",
+    });
+    expect(response.body.sessions[0].activePath).toMatch(/^ssh:\/\/codex-box\//);
+  });
+
+  test("syncs one session over HTTP", async () => {
+    const filePath = await seedSession(harness.codexHome, {
+      id: "http-sync-session",
+      cwd: "/work/http-sync-session",
+      startedAt: "2026-03-29T10:16:37.087Z",
+      firstUserMessage: "HTTP 同步单条会话",
+      latestAgentMessage: "只写目标远端。",
+    });
+    const content = await readFile(filePath);
+    let written:
+      | {
+          sshTarget: string;
+          codexHomePath: string;
+          relativePath: string;
+          content: Buffer;
+        }
+      | null = null;
+
+    const app = createApp({
+      codexHome: harness.codexHome,
+      managerHome: harness.managerHome,
+      remoteSessionFileWriter: async (request) => {
+        written = request;
+      },
+    });
+
+    await request(app).post("/api/sessions/rescan").send({}).expect(200);
+    const response = await request(app)
+      .post("/api/sessions/http-sync-session/sync")
+      .send({
+        target: {
+          kind: "remote",
+          sshTarget: "target-box",
+          codexHomePath: "/opt/codex",
+        },
+      })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      sourceSessionId: "http-sync-session",
+      targetHostLabel: "target-box",
+    });
+    expect(written).not.toBeNull();
+    const writtenRequest = written as unknown as {
+      sshTarget: string;
+      codexHomePath: string;
+      relativePath: string;
+      content: Buffer;
+    };
+
+    expect(writtenRequest).toMatchObject({
+      sshTarget: "target-box",
+      codexHomePath: "/opt/codex",
+    });
+    expect(writtenRequest.content).toEqual(content);
   });
 
   test("returns ui-config with the resolved global language", async () => {
@@ -473,4 +620,14 @@ function restoreEnv(key: string, value: string | undefined) {
     return;
   }
   process.env[key] = value;
+}
+
+async function collectRemotePreviewEntries(codexHome: string) {
+  const sessionsRoot = path.join(codexHome, "sessions");
+  const entries = await collectSessions(sessionsRoot);
+
+  return entries.map((entry) => ({
+    relativePath: path.relative(sessionsRoot, entry.filePath).split(path.sep).join("/"),
+    parsed: entry.parsed,
+  }));
 }

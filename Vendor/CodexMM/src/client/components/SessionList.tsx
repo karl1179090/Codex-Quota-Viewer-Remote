@@ -17,12 +17,12 @@ import {
 
 const FALLBACK_VIEWPORT_HEIGHT = 640;
 const DESKTOP_LAYOUT_METRICS = {
-  projectRowHeight: 52,
+  projectRowHeight: 64,
   sessionRowHeight: 44,
   overscanPx: 64,
 };
 const NARROW_LAYOUT_METRICS = {
-  projectRowHeight: 48,
+  projectRowHeight: 60,
   sessionRowHeight: 44,
   overscanPx: 96,
 };
@@ -33,20 +33,35 @@ type SessionListProps = {
   loading: boolean;
   search: string;
   status: SessionStatus;
+  hostId: string;
+  hostOptions: Array<{ hostId: string; hostLabel: string; isRemote: boolean }>;
+  remoteHost: string;
+  remoteCodexHome: string;
   selectedId: string | null;
   selectedIds: string[];
   onSearchChange: (value: string) => void;
   onStatusChange: (value: SessionStatus) => void;
+  onHostChange: (value: string) => void;
+  onRemoteHostChange: (value: string) => void;
+  onRemoteCodexHomeChange: (value: string) => void;
   onRescan: () => void;
+  onImportRemote: () => void;
+  onPreviewRemote: () => void;
+  importingRemote: boolean;
+  viewingRemote: boolean;
   onRepairOfficial: () => void;
   repairingOfficial: boolean;
   busy: boolean;
   onSelect: (sessionId: string) => void;
   onToggleChecked: (sessionId: string, checked: boolean) => void;
-  onToggleProject: (cwd: string, checked: boolean) => void;
+  onToggleProject: (hostId: string, cwd: string, checked: boolean) => void;
 };
 
 type ProjectGroup = {
+  key: string;
+  hostId: string;
+  hostLabel: string;
+  isRemote: boolean;
   cwd: string;
   name: string;
   latestStartedAt: number;
@@ -82,11 +97,22 @@ export function SessionList({
   loading,
   search,
   status,
+  hostId,
+  hostOptions,
+  remoteHost,
+  remoteCodexHome,
   selectedId,
   selectedIds,
   onSearchChange,
   onStatusChange,
+  onHostChange,
+  onRemoteHostChange,
+  onRemoteCodexHomeChange,
   onRescan,
+  onImportRemote,
+  onPreviewRemote,
+  importingRemote,
+  viewingRemote,
   onRepairOfficial,
   repairingOfficial,
   busy,
@@ -119,7 +145,7 @@ export function SessionList({
   useEffect(() => {
     setCollapsedProjects((current) => {
       const next = Object.fromEntries(
-        projectGroups.map((group) => [group.cwd, current[group.cwd] ?? true]),
+        projectGroups.map((group) => [group.key, current[group.key] ?? true]),
       );
 
       return shallowEqual(current, next) ? current : next;
@@ -165,11 +191,11 @@ export function SessionList({
       const checkedCount = group.sessions.filter((session) =>
         selectedIdSet.has(session.id),
       ).length;
-      const isCollapsed = collapsedProjects[group.cwd] ?? true;
+      const isCollapsed = collapsedProjects[group.key] ?? true;
 
       rows.push({
         type: "project",
-        key: group.cwd,
+        key: group.key,
         top,
         height: layoutMetrics.projectRowHeight,
         group,
@@ -253,6 +279,46 @@ export function SessionList({
         </div>
       </header>
 
+      <form
+        className="remote-import-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onImportRemote();
+        }}
+      >
+        <input
+          aria-label={copy.sidebar.remoteHostLabel}
+          className="weui-input sidebar-input remote-import-form__host"
+          placeholder={copy.sidebar.remoteHostPlaceholder}
+          value={remoteHost}
+          onChange={(event) => onRemoteHostChange(event.target.value)}
+        />
+        <input
+          aria-label={copy.sidebar.remoteCodexHomeLabel}
+          className="weui-input sidebar-input remote-import-form__home"
+          placeholder={copy.sidebar.remoteCodexHomePlaceholder}
+          value={remoteCodexHome}
+          onChange={(event) => onRemoteCodexHomeChange(event.target.value)}
+        />
+        <div className="remote-import-form__actions">
+          <button
+            type="submit"
+            className="sidebar-command remote-import-form__button"
+            disabled={importingRemote || loading || repairingOfficial || busy}
+          >
+            {importingRemote ? copy.sidebar.importingRemote : copy.sidebar.importRemote}
+          </button>
+          <button
+            type="button"
+            className="sidebar-command remote-import-form__button"
+            onClick={onPreviewRemote}
+            disabled={viewingRemote || loading || repairingOfficial || busy}
+          >
+            {viewingRemote ? copy.sidebar.viewingRemote : copy.sidebar.viewRemote}
+          </button>
+        </div>
+      </form>
+
       <div className="sidebar-filters">
         <input
           aria-label={copy.sidebar.searchLabel}
@@ -261,6 +327,19 @@ export function SessionList({
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
         />
+        <select
+          aria-label={copy.sidebar.hostFilterLabel}
+          className="weui-select sidebar-select"
+          value={hostId}
+          onChange={(event) => onHostChange(event.target.value)}
+        >
+          <option value="all">{copy.sidebar.allHosts}</option>
+          {hostOptions.map((host) => (
+            <option key={host.hostId} value={host.hostId}>
+              {host.hostLabel}
+            </option>
+          ))}
+        </select>
         <div
           className="sidebar-filter-switcher"
           role="tablist"
@@ -299,7 +378,7 @@ export function SessionList({
                 <section
                   key={row.key}
                   className={`project-group project-group--virtual ${row.isCollapsed ? "" : "project-group--open"}`}
-                  data-testid={`project-group-${row.group.cwd}`}
+                  data-testid={`project-group-${row.group.hostId}-${row.group.cwd}`}
                   style={{ top: "0px", height: `${row.height}px`, transform: `translateY(${row.top}px)` }}
                 >
                   <div className={`project-group__header ${row.isCollapsed ? "" : "project-group__header--open"}`}>
@@ -308,7 +387,9 @@ export function SessionList({
                         ariaLabel={copy.sidebar.selectProject(row.group.cwd)}
                         checked={row.isChecked}
                         indeterminate={row.isIndeterminate}
-                        onChange={(checked) => onToggleProject(row.group.cwd, checked)}
+                        onChange={(checked) =>
+                          onToggleProject(row.group.hostId, row.group.cwd, checked)
+                        }
                       />
                     </label>
                     <button
@@ -319,7 +400,7 @@ export function SessionList({
                       onClick={() =>
                         setCollapsedProjects((current) => ({
                           ...current,
-                          [row.group.cwd]: !row.isCollapsed,
+                          [row.group.key]: !row.isCollapsed,
                         }))
                       }
                     >
@@ -332,6 +413,13 @@ export function SessionList({
                         >
                           {row.group.name}
                         </strong>
+                        <span
+                          className="project-group__host"
+                          data-testid="sidebar-project-host"
+                          title={row.group.hostLabel}
+                        >
+                          {row.group.hostLabel}
+                        </span>
                         <span
                           className="project-group__path"
                           data-testid="sidebar-project-path"
@@ -440,7 +528,10 @@ function buildProjectGroups(sessions: SessionRecord[], fallbackName: string) {
   const groups = new Map<string, ProjectGroup>();
 
   for (const session of sessions) {
-    const existing = groups.get(session.cwd);
+    const hostId = session.hostId || "local";
+    const hostLabel = session.hostLabel || "This Mac";
+    const key = `${hostId}\u0000${session.cwd}`;
+    const existing = groups.get(key);
 
     if (existing) {
       existing.sessions.push(session);
@@ -451,7 +542,11 @@ function buildProjectGroups(sessions: SessionRecord[], fallbackName: string) {
       continue;
     }
 
-    groups.set(session.cwd, {
+    groups.set(key, {
+      key,
+      hostId,
+      hostLabel,
+      isRemote: Boolean(session.isRemote),
       cwd: session.cwd,
       name: readProjectName(session.cwd, fallbackName),
       latestStartedAt: parseTimestamp(session.startedAt),

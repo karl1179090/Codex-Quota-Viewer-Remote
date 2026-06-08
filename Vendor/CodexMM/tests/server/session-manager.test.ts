@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import Database from "better-sqlite3";
@@ -9,6 +9,7 @@ import {
   createSessionManager,
   type SessionManager,
 } from "../../src/server/services/session-manager";
+import { collectSessions } from "../../src/server/services/session-manager-helpers";
 import { ensureInsidePath } from "../../src/server/lib/paths";
 import {
   createHarness,
@@ -66,6 +67,315 @@ describe("SessionManager", () => {
     });
   });
 
+  test("imports remote host sessions into local host-scoped storage", async () => {
+    const remoteCodexHome = path.join(harness.managerHome, "remote-codex");
+    await seedSession(harness.codexHome, {
+      id: "shared-session",
+      cwd: "/work/local-project",
+      startedAt: "2026-03-29T10:16:37.087Z",
+      firstUserMessage: "本机会话",
+      latestAgentMessage: "本机保留。",
+    });
+    await seedSession(remoteCodexHome, {
+      id: "shared-session",
+      cwd: "/srv/remote-project",
+      startedAt: "2026-03-30T10:16:37.087Z",
+      firstUserMessage: "远端会话",
+      latestAgentMessage: "远端已拉取。",
+      registerOfficialThread: false,
+      registerSessionIndex: false,
+    });
+
+    manager = createSessionManager({
+      codexHome: harness.codexHome,
+      managerHome: harness.managerHome,
+      remoteSessionPuller: async ({ destinationRoot }) => {
+        await cp(path.join(remoteCodexHome, "sessions"), destinationRoot, {
+          recursive: true,
+          force: true,
+        });
+
+        return {
+          copiedFileCount: 1,
+          copiedSessionCount: 1,
+        };
+      },
+    });
+
+    const imported = await manager.importRemoteSessions({
+      sshTarget: "codex-box",
+      codexHomePath: "~/.codex",
+    });
+
+    expect(imported.hostLabel).toBe("codex-box");
+    expect(imported.importedCount).toBe(1);
+    const sharedSessions = imported.sessions.filter(
+      (session) => session.threadId === "shared-session",
+    );
+    const remoteSession = sharedSessions.find((session) => session.isRemote);
+
+    expect(sharedSessions).toHaveLength(2);
+    expect(sharedSessions.map((session) => session.hostId).sort()).toEqual([
+      "local",
+      imported.hostId,
+    ].sort());
+    expect(remoteSession).toMatchObject({
+      id: `remote:${imported.hostId}:shared-session`,
+      hostId: imported.hostId,
+      hostLabel: "codex-box",
+      cwd: "/srv/remote-project",
+      status: "active",
+    });
+    expect(remoteSession?.activePath).toContain(
+      path.join(harness.managerHome, "remote_hosts", imported.hostId, "sessions"),
+    );
+
+    const remoteOnly = await manager.listSessions({ hostId: imported.hostId });
+    expect(remoteOnly).toHaveLength(1);
+    const detail = await manager.getSessionDetail(remoteSession!.id);
+    expect(detail.officialState).toEqual({
+      status: "remote_copy",
+      canAppearInCodex: false,
+      issueCodes: [],
+    });
+  });
+
+  test("previews remote host sessions without saving them into host-scoped storage", async () => {
+    const remoteCodexHome = path.join(harness.managerHome, "remote-preview-codex");
+    await seedSession(remoteCodexHome, {
+      id: "direct-remote-session",
+      cwd: "/srv/direct-preview",
+      startedAt: "2026-03-30T10:16:37.087Z",
+      firstUserMessage: "直接查看远端会话",
+      latestAgentMessage: "不落到本地保存。",
+      registerOfficialThread: false,
+      registerSessionIndex: false,
+    });
+
+    manager = createSessionManager({
+      codexHome: harness.codexHome,
+      managerHome: harness.managerHome,
+      remoteSessionPreviewer: async ({ sshTarget, codexHomePath }) => {
+        expect(sshTarget).toBe("codex-box");
+        expect(codexHomePath).toBe("~/.codex");
+        return collectRemotePreviewEntries(remoteCodexHome);
+      },
+    });
+
+    const preview = await manager.previewRemoteSessions({
+      sshTarget: "codex-box",
+      codexHomePath: "~/.codex",
+    });
+    const directRecord = preview.sessions.find(
+      (session) => session.threadId === "direct-remote-session",
+    );
+
+    expect(preview.previewedCount).toBe(1);
+    expect(directRecord).toMatchObject({
+      id: `direct:${preview.hostId}:direct-remote-session`,
+      hostLabel: "codex-box",
+      isRemote: true,
+      cwd: "/srv/direct-preview",
+      status: "active",
+      userPromptExcerpt: "直接查看远端会话",
+    });
+    expect(directRecord?.activePath).toMatch(/^ssh:\/\/codex-box\//);
+    await expect(
+      access(path.join(harness.managerHome, "remote_hosts", preview.hostId, "sessions")),
+    ).rejects.toThrow();
+
+    const detail = await manager.getSessionDetail(directRecord!.id);
+    expect(detail.timelineTotal).toBeGreaterThan(0);
+    expect(detail.officialState).toEqual({
+      status: "remote_copy",
+      canAppearInCodex: false,
+      issueCodes: [],
+    });
+  });
+
+  test("syncs a directly previewed remote session to the local Codex home", async () => {
+    const remoteCodexHome = path.join(harness.managerHome, "remote-sync-source");
+    const remoteFilePath = await seedSession(remoteCodexHome, {
+      id: "direct-sync-local",
+      cwd: "/srv/sync-local",
+      startedAt: "2026-03-30T10:16:37.087Z",
+      firstUserMessage: "同步到本机",
+      latestAgentMessage: "只复制这一条。",
+      registerOfficialThread: false,
+      registerSessionIndex: false,
+    });
+    const remoteContent = await readFile(remoteFilePath);
+    const sourceSessionsRoot = path.join(remoteCodexHome, "sessions");
+    const relativePath = normalizeTestRelativePath(
+      path.relative(sourceSessionsRoot, remoteFilePath),
+    );
+
+    manager = createSessionManager({
+      codexHome: harness.codexHome,
+      managerHome: harness.managerHome,
+      remoteSessionPreviewer: () => collectRemotePreviewEntries(remoteCodexHome),
+      remoteSessionFileReader: async (request) => {
+        expect(request).toMatchObject({
+          sshTarget: "source-box",
+          codexHomePath: "~/.codex",
+          relativePath,
+        });
+        return remoteContent;
+      },
+    });
+
+    const preview = await manager.previewRemoteSessions({
+      sshTarget: "source-box",
+      codexHomePath: "~/.codex",
+    });
+    const directRecord = preview.sessions.find(
+      (session) => session.threadId === "direct-sync-local",
+    )!;
+    const synced = await manager.syncSession(directRecord.id, {
+      target: { kind: "local" },
+    });
+
+    expect(synced).toMatchObject({
+      sourceSessionId: directRecord.id,
+      targetHostId: "local",
+      targetHostLabel: "This Mac",
+      relativePath,
+    });
+    await expect(
+      readFile(path.join(harness.codexHome, "sessions", relativePath)),
+    ).resolves.toEqual(remoteContent);
+    expect(synced.sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "direct-sync-local",
+          isRemote: false,
+          cwd: "/srv/sync-local",
+        }),
+        expect.objectContaining({
+          id: directRecord.id,
+          isRemote: true,
+        }),
+      ]),
+    );
+  });
+
+  test("syncs one local session file to a remote host", async () => {
+    const filePath = await seedSession(harness.codexHome, {
+      id: "local-sync-remote",
+      cwd: "/work/local-sync-remote",
+      startedAt: "2026-03-29T10:16:37.087Z",
+      firstUserMessage: "同步到远端",
+      latestAgentMessage: "目标远端只收到这一条。",
+    });
+    const content = await readFile(filePath);
+    const relativePath = normalizeTestRelativePath(
+      path.relative(path.join(harness.codexHome, "sessions"), filePath),
+    );
+    let written:
+      | {
+          sshTarget: string;
+          codexHomePath: string;
+          relativePath: string;
+          content: Buffer;
+        }
+      | null = null;
+
+    manager = createSessionManager({
+      codexHome: harness.codexHome,
+      managerHome: harness.managerHome,
+      remoteSessionFileWriter: async (request) => {
+        written = request;
+      },
+    });
+
+    await manager.rescan();
+    const synced = await manager.syncSession("local-sync-remote", {
+      target: {
+        kind: "remote",
+        sshTarget: "target-box",
+        codexHomePath: "/opt/codex",
+      },
+    });
+
+    expect(synced).toMatchObject({
+      sourceSessionId: "local-sync-remote",
+      targetHostLabel: "target-box",
+      relativePath,
+    });
+    expect(written).not.toBeNull();
+    const writtenRequest = written as unknown as {
+      sshTarget: string;
+      codexHomePath: string;
+      relativePath: string;
+      content: Buffer;
+    };
+
+    expect(writtenRequest).toMatchObject({
+      sshTarget: "target-box",
+      codexHomePath: "/opt/codex",
+      relativePath,
+    });
+    expect(writtenRequest.content).toEqual(content);
+  });
+
+  test("syncs one directly previewed remote session to another remote host", async () => {
+    const remoteCodexHome = path.join(harness.managerHome, "remote-to-remote-source");
+    const remoteFilePath = await seedSession(remoteCodexHome, {
+      id: "remote-to-remote-session",
+      cwd: "/srv/source-project",
+      startedAt: "2026-03-30T10:16:37.087Z",
+      firstUserMessage: "从远端同步到另一个远端",
+      latestAgentMessage: "目标主机写入同一条会话。",
+      registerOfficialThread: false,
+      registerSessionIndex: false,
+    });
+    const content = await readFile(remoteFilePath);
+    const relativePath = normalizeTestRelativePath(
+      path.relative(path.join(remoteCodexHome, "sessions"), remoteFilePath),
+    );
+    let readSourceHost = "";
+    let writtenTargetHost = "";
+
+    manager = createSessionManager({
+      codexHome: harness.codexHome,
+      managerHome: harness.managerHome,
+      remoteSessionPreviewer: () => collectRemotePreviewEntries(remoteCodexHome),
+      remoteSessionFileReader: async (request) => {
+        readSourceHost = request.sshTarget;
+        expect(request.relativePath).toBe(relativePath);
+        return content;
+      },
+      remoteSessionFileWriter: async (request) => {
+        writtenTargetHost = request.sshTarget;
+        expect(request.relativePath).toBe(relativePath);
+        expect(request.content).toEqual(content);
+      },
+    });
+
+    const preview = await manager.previewRemoteSessions({
+      sshTarget: "source-box",
+      codexHomePath: "~/.codex",
+    });
+    const directRecord = preview.sessions.find(
+      (session) => session.threadId === "remote-to-remote-session",
+    )!;
+    const synced = await manager.syncSession(directRecord.id, {
+      target: {
+        kind: "remote",
+        sshTarget: "target-box",
+        codexHomePath: "~/.codex",
+      },
+    });
+
+    expect(readSourceHost).toBe("source-box");
+    expect(writtenTargetHost).toBe("target-box");
+    expect(synced).toMatchObject({
+      sourceSessionId: directRecord.id,
+      targetHostLabel: "target-box",
+      relativePath,
+    });
+  });
+
   test("rescans keep updatedAt stable, refresh indexedAt, and do not repair official stores", async () => {
     await seedSession(harness.codexHome, {
       id: "session-rescan-idempotent",
@@ -93,6 +403,48 @@ describe("SessionManager", () => {
     expect(secondPass.record.indexedAt).not.toBe(firstPass.record.indexedAt);
     expect(readOfficialThread(harness.codexHome, "session-rescan-idempotent")).toBeNull();
     await expect(readSessionIndexEntry(harness.codexHome, "session-rescan-idempotent")).resolves.toBeNull();
+  });
+
+  test("migrates legacy indexes before creating host indexes", async () => {
+    const databasePath = path.join(harness.managerHome, "index.db");
+    await rm(databasePath, { force: true });
+    await rm(`${databasePath}-shm`, { force: true });
+    await rm(`${databasePath}-wal`, { force: true });
+
+    const db = new Database(databasePath);
+    db.exec(`
+      create table sessions (
+        id text primary key,
+        active_path text,
+        archive_path text,
+        snapshot_path text,
+        original_relative_path text,
+        cwd text not null,
+        started_at text not null,
+        originator text not null,
+        source text not null,
+        cli_version text not null,
+        model_provider text not null,
+        size_bytes integer not null default 0,
+        line_count integer not null default 0,
+        event_count integer not null default 0,
+        tool_call_count integer not null default 0,
+        user_prompt_excerpt text not null default '',
+        latest_agent_message_excerpt text not null default '',
+        status text not null,
+        created_at text not null,
+        updated_at text not null,
+        indexed_at text not null
+      );
+    `);
+    db.close();
+
+    expect(() =>
+      createSessionManager({
+        codexHome: harness.codexHome,
+        managerHome: harness.managerHome,
+      }),
+    ).not.toThrow();
   });
 
   test("reports canonical official-state issue codes without localized prose", async () => {
@@ -999,6 +1351,20 @@ function updateStoredSessionPath(
   const db = new Database(path.join(managerHome, "index.db"));
   db.prepare(`update sessions set ${field} = ? where id = ?`).run(value, sessionId);
   db.close();
+}
+
+async function collectRemotePreviewEntries(codexHome: string) {
+  const sessionsRoot = path.join(codexHome, "sessions");
+  const entries = await collectSessions(sessionsRoot);
+
+  return entries.map((entry) => ({
+    relativePath: normalizeTestRelativePath(path.relative(sessionsRoot, entry.filePath)),
+    parsed: entry.parsed,
+  }));
+}
+
+function normalizeTestRelativePath(relativePath: string) {
+  return relativePath.split(path.sep).join("/");
 }
 
 function readCatalogTableNames(managerHome: string) {

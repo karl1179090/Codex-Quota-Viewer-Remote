@@ -295,6 +295,71 @@ func sshRemoteSwitchClientDirectSwitchWithoutRestorePointSkipsRemoteBackup() asy
 }
 
 @Test
+func sshRemoteSwitchClientRepairsRemoteHistoryMetadata() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RemoteHistoryRepairTests-\(UUID().uuidString)", isDirectory: true)
+    let codexHome = root.appendingPathComponent("codex", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: root)
+    }
+    try FileManager.default.createDirectory(
+        at: codexHome.appendingPathComponent("sessions", isDirectory: true),
+        withIntermediateDirectories: true
+    )
+    try Data("model_provider = \"openai\"\nmodel = \"gpt-5.1-codex\"\n".utf8)
+        .write(to: codexHome.appendingPathComponent("config.toml"), options: .atomic)
+    let rolloutURL = codexHome
+        .appendingPathComponent("sessions", isDirectory: true)
+        .appendingPathComponent("rollout-remote.jsonl", isDirectory: false)
+    try Data(
+        """
+        {"type":"session_meta","payload":{"id":"remote-1","model_provider":"legacy","model":"old-model"}}
+        {"type":"event_msg","payload":{"message":"keep"}}
+        """.utf8
+    )
+    .write(to: rolloutURL, options: .atomic)
+    try Data(#"{"id":"remote-1","model_provider":"legacy","model":"old-model"}"#.utf8)
+        .write(to: codexHome.appendingPathComponent("session_index.jsonl"), options: .atomic)
+    try remoteHistoryRepairSQLite(
+        codexHome.appendingPathComponent("state_5.sqlite"),
+        """
+        CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, model TEXT);
+        INSERT INTO threads VALUES ('remote-1', 'legacy', 'old-model');
+        """
+    )
+
+    let executor = LocalShellRemoteProcessExecutor()
+    let client = SSHRemoteSwitchClient(
+        executor: executor,
+        sshURL: URL(fileURLWithPath: "/mock/ssh")
+    )
+
+    let result = try await client.repairHistoryMetadata(
+        settings: RemoteSwitchSettings(
+            enabled: true,
+            sshTarget: "remote",
+            codexHomePath: codexHome.path
+        )
+    )
+
+    let summary = try #require(result.targets.first?.summary)
+    #expect(summary.dbThreadsUpdated == 1)
+    #expect(summary.rolloutFilesUpdated == 1)
+    #expect(summary.indexRowsUpdated == 1)
+    #expect(summary.backupPath?.contains("history-sync-backups/codex-history-") == true)
+    #expect(
+        try remoteHistoryRepairSQLite(
+            codexHome.appendingPathComponent("state_5.sqlite"),
+            "SELECT model_provider || '\t' || model FROM threads WHERE id = 'remote-1';"
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines) == "openai\tgpt-5.1-codex"
+    )
+    let payload = try remoteTestSessionMetaPayload(from: rolloutURL)
+    #expect(payload["model_provider"] as? String == "openai")
+    #expect(payload["model"] as? String == "gpt-5.1-codex")
+}
+
+@Test
 func sshRemoteSwitchClientRollbackUsesSameRestorePoint() async throws {
     let executor = RemoteProcessExecutorSpy(
         result: ProcessExecutionResult(
@@ -319,7 +384,7 @@ func sshRemoteSwitchClientRollbackUsesSameRestorePoint() async throws {
 }
 
 @Test
-func sshRemoteSwitchClientThrowsReadableErrorOnSSHFailure() async throws {
+func sshRemoteSwitchClientReportsTargetFailureOnSSHFailure() async throws {
     let executor = RemoteProcessExecutorSpy(
         result: ProcessExecutionResult(
             terminationStatus: 255,
@@ -329,7 +394,7 @@ func sshRemoteSwitchClientThrowsReadableErrorOnSSHFailure() async throws {
     )
     let client = SSHRemoteSwitchClient(executor: executor)
 
-    await #expect(throws: RemoteSwitchError.self) {
+    do {
         _ = try await client.perform(
             RemoteSwitchOperation(
                 settings: RemoteSwitchSettings(enabled: true, sshTarget: "prod"),
@@ -339,6 +404,14 @@ func sshRemoteSwitchClientThrowsReadableErrorOnSSHFailure() async throws {
                 targetProviderID: "openai"
             )
         )
+        Issue.record("Expected remote partial failure")
+    } catch let error as RemoteSwitchPartialFailureError {
+        #expect(error.successes.isEmpty)
+        #expect(error.failures == [
+            RemoteSwitchTargetFailure(sshTarget: "prod", reason: "permission denied"),
+        ])
+    } catch {
+        Issue.record("Unexpected error: \(error)")
     }
 }
 
@@ -441,6 +514,14 @@ private final class LocalShellRemoteProcessExecutor: ProcessExecuting, @unchecke
 }
 
 private func remoteTestSessionMetaProvider(from fileURL: URL) throws -> String {
+    let payload = try remoteTestSessionMetaPayload(from: fileURL)
+    guard let provider = payload["model_provider"] as? String else {
+        throw NSError(domain: "RemoteSwitchClientTests", code: 2)
+    }
+    return provider
+}
+
+private func remoteTestSessionMetaPayload(from fileURL: URL) throws -> [String: Any] {
     guard let firstLine = try String(contentsOf: fileURL, encoding: .utf8)
         .split(separator: "\n")
         .first else {
@@ -448,8 +529,31 @@ private func remoteTestSessionMetaProvider(from fileURL: URL) throws -> String {
     }
     let object = try JSONSerialization.jsonObject(with: Data(firstLine.utf8)) as? [String: Any]
     let payload = object?["payload"] as? [String: Any]
-    guard let provider = payload?["model_provider"] as? String else {
+    guard let payload else {
         throw NSError(domain: "RemoteSwitchClientTests", code: 2)
     }
-    return provider
+    return payload
+}
+
+@discardableResult
+private func remoteHistoryRepairSQLite(_ databaseURL: URL, _ sql: String) throws -> String {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.arguments = [databaseURL.path, sql]
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+    try process.run()
+    process.waitUntilExit()
+    let output = stdout.fileHandleForReading.readDataToEndOfFile()
+    let error = stderr.fileHandleForReading.readDataToEndOfFile()
+    guard process.terminationStatus == 0 else {
+        throw NSError(
+            domain: "RemoteSwitchClientTests",
+            code: Int(process.terminationStatus),
+            userInfo: [NSLocalizedDescriptionKey: String(data: error, encoding: .utf8) ?? "sqlite failed"]
+        )
+    }
+    return String(data: output, encoding: .utf8) ?? ""
 }

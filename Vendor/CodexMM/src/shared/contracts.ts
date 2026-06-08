@@ -6,6 +6,10 @@ export type SessionStatus =
 
 export type SessionRecord = {
   id: string;
+  threadId: string;
+  hostId: string;
+  hostLabel: string;
+  isRemote: boolean;
   filePath: string | null;
   activePath: string | null;
   archivePath: string | null;
@@ -67,7 +71,7 @@ export type SessionOfficialIssueCode =
   | "snapshot_recent_conversation_still_present";
 
 export type SessionOfficialState = {
-  status: "synced" | "repair_needed" | "hidden";
+  status: "synced" | "repair_needed" | "hidden" | "remote_copy";
   canAppearInCodex: boolean;
   issueCodes: SessionOfficialIssueCode[];
 };
@@ -91,6 +95,7 @@ export type SessionFilters = {
   query?: string;
   status?: SessionStatus;
   cwd?: string;
+  hostId?: string;
 };
 
 export type RestoreMode = "resume_only" | "rebind_cwd";
@@ -99,9 +104,14 @@ export type ApiErrorCode =
   | "active_session_cannot_be_archived"
   | "active_session_must_be_deleted_before_purge"
   | "internal_server_error"
+  | "invalid_remote_host"
   | "managed_session_path_outside"
   | "path_outside_managed_root"
   | "rebind_requires_target"
+  | "remote_session_import_failed"
+  | "remote_session_tar_failed"
+  | "remote_ssh_failed"
+  | "remote_sync_target_required"
   | "restore_target_missing_directory"
   | "restore_target_not_directory"
   | "restore_target_permission_denied"
@@ -113,6 +123,7 @@ export type ApiErrorCode =
 
 export type ApiErrorDetails = {
   sessionId?: string;
+  host?: string;
   label?: "active" | "archive" | "snapshot";
   managedRoot?: string;
   candidatePath?: string;
@@ -159,6 +170,48 @@ export type OfficialRepairStats = {
 export type OfficialRepairResponse = {
   sessions: SessionRecord[];
   stats: OfficialRepairStats;
+};
+
+export type RemoteSessionImportRequest = {
+  sshTarget: string;
+  codexHomePath?: string;
+};
+
+export type RemoteSessionImportResponse = {
+  hostId: string;
+  hostLabel: string;
+  importedCount: number;
+  copiedFileCount: number;
+  sessions: SessionRecord[];
+};
+
+export type RemoteSessionPreviewResponse = {
+  hostId: string;
+  hostLabel: string;
+  previewedCount: number;
+  sessions: SessionRecord[];
+};
+
+export type SessionSyncTarget =
+  | {
+      kind: "local";
+    }
+  | {
+      kind: "remote";
+      sshTarget: string;
+      codexHomePath?: string;
+    };
+
+export type SessionSyncRequest = {
+  target: SessionSyncTarget;
+};
+
+export type SessionSyncResponse = {
+  sourceSessionId: string;
+  targetHostId: string;
+  targetHostLabel: string;
+  relativePath: string;
+  sessions: SessionRecord[];
 };
 
 export type UiConfigResponse = {

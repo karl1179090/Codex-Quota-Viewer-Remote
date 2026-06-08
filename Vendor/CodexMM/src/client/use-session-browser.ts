@@ -17,10 +17,13 @@ import {
   batchTrashSessions,
   fetchSessionDetail,
   fetchSessionTimelinePage,
+  importRemoteSessions,
   listSessions,
+  previewRemoteSessions,
   repairOfficialThreads,
   rescanSessions,
   restoreSession,
+  syncSession,
 } from "./api";
 import type { TranslationSet } from "./i18n";
 import {
@@ -50,6 +53,11 @@ export function useSessionBrowser(copy: TranslationSet) {
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<SessionStatus>(DEFAULT_STATUS);
+  const [hostId, setHostId] = useState("all");
+  const [remoteHost, setRemoteHost] = useState("");
+  const [remoteCodexHome, setRemoteCodexHome] = useState("~/.codex");
+  const [syncTargetHost, setSyncTargetHost] = useState("");
+  const [syncTargetCodexHome, setSyncTargetCodexHome] = useState("~/.codex");
   const [targetCwd, setTargetCwd] = useState("");
   const [restoreMode, setRestoreMode] = useState<RestoreMode>("resume_only");
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -78,6 +86,7 @@ export function useSessionBrowser(copy: TranslationSet) {
   const latestListStateRef = useRef({
     search,
     status,
+    hostId,
     indexedSessions,
   });
 
@@ -131,16 +140,16 @@ export function useSessionBrowser(copy: TranslationSet) {
     }
 
     listRequestSequenceRef.current += 1;
-    setListedSessions(filterVisibleSessions(indexedSessions, search, status));
+    setListedSessions(filterVisibleSessions(indexedSessions, search, status, hostId));
     setLoadingSessions(false);
-  }, [hasLoadedInitialIndex, indexedSessions, search, status]);
+  }, [hasLoadedInitialIndex, hostId, indexedSessions, search, status]);
 
   useEffect(() => {
     if (!hasLoadedInitialIndex) {
       return;
     }
 
-    const nextFilters = buildFilters(search, status);
+    const nextFilters = buildFilters(search, status, hostId);
 
     if (!nextFilters.query && status === DEFAULT_STATUS) {
       return;
@@ -153,15 +162,16 @@ export function useSessionBrowser(copy: TranslationSet) {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [hasLoadedInitialIndex, loadListedSessions, search, status]);
+  }, [hasLoadedInitialIndex, hostId, loadListedSessions, search, status]);
 
   useEffect(() => {
     latestListStateRef.current = {
       search,
       status,
+      hostId,
       indexedSessions,
     };
-  }, [indexedSessions, search, status]);
+  }, [hostId, indexedSessions, search, status]);
 
   useEffect(() => {
     return subscribeMediaQuery(NARROW_VIEWPORT_MEDIA_QUERY, setIsNarrowViewport);
@@ -233,6 +243,26 @@ export function useSessionBrowser(copy: TranslationSet) {
     [checkedSessionIds, indexedSessionMap],
   );
   const currentRecord = detail?.record ?? null;
+  const hostOptions = useMemo(() => {
+    const byId = new Map<string, { hostId: string; hostLabel: string; isRemote: boolean }>();
+
+    for (const session of indexedSessions) {
+      const normalizedHostId = session.hostId || "local";
+      byId.set(normalizedHostId, {
+        hostId: normalizedHostId,
+        hostLabel: session.hostLabel || "This Mac",
+        isRemote: Boolean(session.isRemote),
+      });
+    }
+
+    return [...byId.values()].sort((left, right) => {
+      if (left.isRemote !== right.isRemote) {
+        return left.isRemote ? 1 : -1;
+      }
+
+      return left.hostLabel.localeCompare(right.hostLabel);
+    });
+  }, [indexedSessions]);
   const archivedLikeCount = useMemo(
     () => indexedSessions.filter((session) => isArchivedViewStatus(session.status)).length,
     [indexedSessions],
@@ -246,16 +276,25 @@ export function useSessionBrowser(copy: TranslationSet) {
   );
   const canArchiveBatch =
     checkedSessionRecords.length > 0 &&
-    checkedSessionRecords.every((session) => session.status === "active");
+    checkedSessionRecords.every(
+      (session) => session.status === "active" && !isDirectRemoteSession(session),
+    );
   const canTrashBatch =
     checkedSessionRecords.length > 0 &&
-    checkedSessionRecords.every((session) => canTrashSessionStatus(session.status));
+    checkedSessionRecords.every(
+      (session) => canTrashSessionStatus(session.status) && !isDirectRemoteSession(session),
+    );
   const canRestoreBatch =
     checkedSessionRecords.length > 0 &&
-    checkedSessionRecords.every((session) => canRestoreSessionStatus(session.status));
+    checkedSessionRecords.every(
+      (session) => !session.isRemote && canRestoreSessionStatus(session.status),
+    );
   const canRestoreCurrent =
-    currentRecord !== null && canResumeSessionStatus(currentRecord.status);
-  const canArchiveCurrent = currentRecord?.status === "active";
+    currentRecord !== null &&
+    !currentRecord.isRemote &&
+    canResumeSessionStatus(currentRecord.status);
+  const canArchiveCurrent =
+    currentRecord?.status === "active" && !isDirectRemoteSession(currentRecord);
 
   return {
     indexedSessions,
@@ -265,6 +304,12 @@ export function useSessionBrowser(copy: TranslationSet) {
     detail,
     search,
     status,
+    hostId,
+    hostOptions,
+    remoteHost,
+    remoteCodexHome,
+    syncTargetHost,
+    syncTargetCodexHome,
     targetCwd,
     restoreMode,
     feedback,
@@ -287,10 +332,17 @@ export function useSessionBrowser(copy: TranslationSet) {
     canArchiveCurrent,
     setSearch,
     setStatus,
+    setHostId,
+    setRemoteHost,
+    setRemoteCodexHome,
+    setSyncTargetHost,
+    setSyncTargetCodexHome,
     setTargetCwd,
     setRestoreMode,
     setCheckedSessionIds,
     rescanIndex,
+    importRemoteIndex,
+    previewRemoteIndex,
     selectSession,
     showSessionList,
     toggleChecked,
@@ -302,6 +354,8 @@ export function useSessionBrowser(copy: TranslationSet) {
     purgeTrash,
     restoreCurrentToDirectory,
     archiveCurrent,
+    syncCurrentToLocal,
+    syncCurrentToRemote,
     repairAllOfficialThreads,
     repairCurrentOfficialThread,
     copyResumeCommand,
@@ -315,7 +369,7 @@ export function useSessionBrowser(copy: TranslationSet) {
     setError(null);
 
     try {
-      const response = await listSessions(buildFilters("", DEFAULT_STATUS));
+      const response = await listSessions(buildFilters("", DEFAULT_STATUS, "all"));
 
       if (listRequestSequenceRef.current !== requestId) {
         return;
@@ -323,7 +377,9 @@ export function useSessionBrowser(copy: TranslationSet) {
 
       setIndexedSessions(response.sessions);
       const latest = latestListStateRef.current;
-      setListedSessions(filterVisibleSessions(response.sessions, latest.search, latest.status));
+      setListedSessions(
+        filterVisibleSessions(response.sessions, latest.search, latest.status, latest.hostId),
+      );
       setHasLoadedInitialIndex(true);
       setResumeCommand(null);
       setFeedback(null);
@@ -356,7 +412,9 @@ export function useSessionBrowser(copy: TranslationSet) {
 
       setIndexedSessions(response.sessions);
       const latest = latestListStateRef.current;
-      setListedSessions(filterVisibleSessions(response.sessions, latest.search, latest.status));
+      setListedSessions(
+        filterVisibleSessions(response.sessions, latest.search, latest.status, latest.hostId),
+      );
       setHasLoadedInitialIndex(true);
       setResumeCommand(null);
       setFeedback(null);
@@ -372,6 +430,49 @@ export function useSessionBrowser(copy: TranslationSet) {
         setLoadingSessions(false);
       }
     }
+  }
+
+  async function importRemoteIndex() {
+    const sshTarget = remoteHost.trim();
+    const codexHomePath = remoteCodexHome.trim() || "~/.codex";
+
+    if (!sshTarget) {
+      setError(copy.errors.invalidRemoteHost);
+      return;
+    }
+
+    const response = await importRemoteSessions({
+      sshTarget,
+      codexHomePath,
+    });
+
+    replaceSessions(response.sessions);
+    setHostId(response.hostId);
+    setFeedback(copy.messages.remoteImportSuccess(response.hostLabel, response.importedCount));
+    setResumeCommand(null);
+    setBatchFailures([]);
+  }
+
+  async function previewRemoteIndex() {
+    const sshTarget = remoteHost.trim();
+    const codexHomePath = remoteCodexHome.trim() || "~/.codex";
+
+    if (!sshTarget) {
+      setError(copy.errors.invalidRemoteHost);
+      return;
+    }
+
+    const response = await previewRemoteSessions({
+      sshTarget,
+      codexHomePath,
+    });
+
+    replaceSessions(response.sessions);
+    setHostId(response.hostId);
+    setSyncTargetHost((current) => current || response.hostLabel);
+    setFeedback(copy.messages.remotePreviewSuccess(response.hostLabel, response.previewedCount));
+    setResumeCommand(null);
+    setBatchFailures([]);
   }
 
   async function loadDetail(sessionId: string, requestId: number) {
@@ -507,6 +608,52 @@ export function useSessionBrowser(copy: TranslationSet) {
     await refreshListedSessionsForCurrentFilters();
   }
 
+  async function syncCurrentToLocal() {
+    if (!focusedSessionId) {
+      return;
+    }
+
+    const response = await syncSession(focusedSessionId, {
+      target: {
+        kind: "local",
+      },
+    });
+
+    replaceSessions(response.sessions);
+    setFeedback(copy.messages.sessionSyncedToLocal);
+    setResumeCommand(null);
+    setBatchFailures([]);
+    await refreshFocusedDetail();
+  }
+
+  async function syncCurrentToRemote() {
+    if (!focusedSessionId) {
+      return;
+    }
+
+    const sshTarget = syncTargetHost.trim();
+    const codexHomePath = syncTargetCodexHome.trim() || "~/.codex";
+
+    if (!sshTarget) {
+      setError(copy.errors.invalidRemoteHost);
+      return;
+    }
+
+    const response = await syncSession(focusedSessionId, {
+      target: {
+        kind: "remote",
+        sshTarget,
+        codexHomePath,
+      },
+    });
+
+    replaceSessions(response.sessions);
+    setFeedback(copy.messages.sessionSyncedToRemote(response.targetHostLabel));
+    setResumeCommand(null);
+    setBatchFailures([]);
+    await refreshFocusedDetail();
+  }
+
   async function repairAllOfficialThreads() {
     const response = await repairOfficialThreads();
     replaceSessions(response.sessions);
@@ -589,9 +736,9 @@ export function useSessionBrowser(copy: TranslationSet) {
     });
   }
 
-  function toggleProject(cwd: string, checked: boolean) {
+  function toggleProject(hostId: string, cwd: string, checked: boolean) {
     const projectSessionIds = listedSessions
-      .filter((session) => session.cwd === cwd)
+      .filter((session) => session.hostId === hostId && session.cwd === cwd)
       .map((session) => session.id);
 
     setCheckedSessionIds((current) => {
@@ -636,7 +783,9 @@ export function useSessionBrowser(copy: TranslationSet) {
   function replaceSessions(nextSessions: SessionRecord[]) {
     setIndexedSessions(nextSessions);
     const latest = latestListStateRef.current;
-    setListedSessions(filterVisibleSessions(nextSessions, latest.search, latest.status));
+    setListedSessions(
+      filterVisibleSessions(nextSessions, latest.search, latest.status, latest.hostId),
+    );
   }
 
   function removeRecords(sessionIds: string[]) {
@@ -658,12 +807,17 @@ export function useSessionBrowser(copy: TranslationSet) {
 
   async function refreshListedSessionsForCurrentFilters() {
     const latest = latestListStateRef.current;
-    const filters = buildFilters(latest.search, latest.status);
+    const filters = buildFilters(latest.search, latest.status, latest.hostId);
 
     if (!filters.query && latest.status === DEFAULT_STATUS) {
       listRequestSequenceRef.current += 1;
       setListedSessions(
-        filterVisibleSessions(latest.indexedSessions, latest.search, latest.status),
+        filterVisibleSessions(
+          latest.indexedSessions,
+          latest.search,
+          latest.status,
+          latest.hostId,
+        ),
       );
       setLoadingSessions(false);
       return;
@@ -711,4 +865,11 @@ export function useSessionBrowser(copy: TranslationSet) {
       return false;
     }
   }
+}
+
+function isDirectRemoteSession(session: SessionRecord) {
+  return (
+    session.isRemote &&
+    (session.id.startsWith("direct:") || session.activePath?.startsWith("ssh://"))
+  );
 }

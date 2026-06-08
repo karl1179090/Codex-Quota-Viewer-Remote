@@ -16,6 +16,7 @@
 }
 
 .sidebar-header,
+.remote-import-form,
 .sidebar-filters,
 .session-row__headline,
 .sidebar-filter-switcher {
@@ -89,7 +90,27 @@
   gap: 10px;
 }
 
-.sidebar-filters .sidebar-input {
+.remote-import-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(90px, 0.8fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.remote-import-form__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.remote-import-form__button {
+  white-space: nowrap;
+}
+
+.sidebar-filters .sidebar-input,
+.remote-import-form .sidebar-input,
+.sidebar-select {
   min-height: 44px;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -100,8 +121,16 @@
 }
 
 .sidebar-filters .sidebar-input:hover,
-.sidebar-filters .sidebar-input:focus {
+.sidebar-filters .sidebar-input:focus,
+.remote-import-form .sidebar-input:hover,
+.remote-import-form .sidebar-input:focus,
+.sidebar-select:hover,
+.sidebar-select:focus {
   border-color: var(--line-strong);
+}
+
+.sidebar-select {
+  appearance: none;
 }
 
 .sidebar-filter-switcher {
@@ -248,6 +277,16 @@
   text-overflow: ellipsis;
 }
 
+.project-group__host {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  line-height: 1.05;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .project-group__count {
   align-self: center;
   font-size: 10.5px;
@@ -379,6 +418,10 @@
   .sidebar-command,
   .sidebar-filter-tab {
     min-height: 40px;
+  }
+
+  .remote-import-form {
+    grid-template-columns: 1fr;
   }
 
   .project-group__header {

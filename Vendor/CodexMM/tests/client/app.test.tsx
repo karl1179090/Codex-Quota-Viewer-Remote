@@ -27,6 +27,10 @@ const hiddenOfficialState = {
 
 const sessionAlpha: SessionRecord = {
   id: "session-alpha",
+  threadId: "session-alpha",
+  hostId: "local",
+  hostLabel: "This Mac",
+  isRemote: false,
   filePath: "/tmp/example-home/.codex/sessions/2026/03/29/session-alpha.jsonl",
   activePath: "/tmp/example-home/.codex/sessions/2026/03/29/session-alpha.jsonl",
   archivePath: null,
@@ -53,6 +57,7 @@ const sessionAlpha: SessionRecord = {
 const sessionBeta: SessionRecord = {
   ...sessionAlpha,
   id: "session-beta",
+  threadId: "session-beta",
   filePath: "/tmp/example-home/.codex/sessions/2026/03/28/session-beta.jsonl",
   activePath: "/tmp/example-home/.codex/sessions/2026/03/28/session-beta.jsonl",
   originalRelativePath: "2026/03/28/session-beta.jsonl",
@@ -66,6 +71,7 @@ const sessionBeta: SessionRecord = {
 const sessionAlphaSibling: SessionRecord = {
   ...sessionAlpha,
   id: "session-alpha-sibling",
+  threadId: "session-alpha-sibling",
   filePath: "/tmp/example-home/.codex/sessions/2026/03/29/session-alpha-sibling.jsonl",
   activePath: "/tmp/example-home/.codex/sessions/2026/03/29/session-alpha-sibling.jsonl",
   originalRelativePath: "2026/03/29/session-alpha-sibling.jsonl",
@@ -78,6 +84,7 @@ const sessionAlphaSibling: SessionRecord = {
 const sessionArchived: SessionRecord = {
   ...sessionAlpha,
   id: "session-archived",
+  threadId: "session-archived",
   activePath: null,
   archivePath: "/tmp/example-home/.codex/archived_sessions/session-archived.jsonl",
   cwd: "/work/project-archived",
@@ -90,6 +97,7 @@ const sessionArchived: SessionRecord = {
 const sessionRestorable: SessionRecord = {
   ...sessionAlpha,
   id: "session-restorable",
+  threadId: "session-restorable",
   activePath: null,
   archivePath: null,
   snapshotPath: "/tmp/example-home/.codex-session-manager/snapshots/session-restorable.jsonl",
@@ -313,6 +321,158 @@ describe("App", () => {
     ).toBe(true);
   });
 
+  test("pulls remote sessions and switches to the imported host", async () => {
+    const remoteSession: SessionRecord = {
+      ...sessionAlpha,
+      id: "remote:Y29kZXgtYm94:session-remote",
+      threadId: "session-remote",
+      hostId: "Y29kZXgtYm94",
+      hostLabel: "codex-box",
+      isRemote: true,
+      cwd: "/srv/remote-project",
+      userPromptExcerpt: "远端会话",
+      latestAgentMessageExcerpt: "已经保存到本地。",
+    };
+
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+
+      if (url === "/api/sessions?status=active") {
+        return jsonResponse({ sessions: [sessionAlpha] });
+      }
+
+      if (url === "/api/remote-sessions/import" && init?.method === "POST") {
+        return jsonResponse({
+          hostId: "Y29kZXgtYm94",
+          hostLabel: "codex-box",
+          importedCount: 1,
+          copiedFileCount: 1,
+          sessions: [sessionAlpha, remoteSession],
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    renderAppWithLocale();
+
+    expect(await screen.findByText("1 条索引")).toBeInTheDocument();
+    fireEvent.change(await screen.findByRole("textbox", { name: "远程 SSH 主机" }), {
+      target: { value: "codex-box" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "拉取远端" }));
+
+    expect(await screen.findByText("已从 codex-box 拉取 1 条会话。")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "主机筛选" })).toHaveValue("Y29kZXgtYm94");
+    fireEvent.click(screen.getByRole("button", { name: "切换项目 /srv/remote-project" }));
+    expect(await screen.findByText("远端会话")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-project-host")).toHaveTextContent("codex-box");
+  });
+
+  test("previews remote sessions directly and switches to the previewed host", async () => {
+    const remoteSession: SessionRecord = {
+      ...sessionAlpha,
+      id: "direct:Y29kZXgtYm94:session-direct-remote",
+      threadId: "session-direct-remote",
+      hostId: "Y29kZXgtYm94",
+      hostLabel: "codex-box",
+      isRemote: true,
+      filePath: "ssh://codex-box/2026/03/29/session-direct-remote.jsonl",
+      activePath: "ssh://codex-box/2026/03/29/session-direct-remote.jsonl",
+      originalRelativePath: "2026/03/29/session-direct-remote.jsonl",
+      cwd: "/srv/direct-project",
+      userPromptExcerpt: "直接查看远端会话",
+      latestAgentMessageExcerpt: "没有保存到本机。",
+    };
+
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+
+      if (url === "/api/sessions?status=active") {
+        return jsonResponse({ sessions: [sessionAlpha] });
+      }
+
+      if (url === "/api/remote-sessions/preview" && init?.method === "POST") {
+        expect(init.body).toBe(
+          JSON.stringify({
+            sshTarget: "codex-box",
+            codexHomePath: "~/.codex",
+          }),
+        );
+        return jsonResponse({
+          hostId: "Y29kZXgtYm94",
+          hostLabel: "codex-box",
+          previewedCount: 1,
+          sessions: [sessionAlpha, remoteSession],
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    renderAppWithLocale();
+
+    expect(await screen.findByText("1 条索引")).toBeInTheDocument();
+    fireEvent.change(await screen.findByRole("textbox", { name: "远程 SSH 主机" }), {
+      target: { value: "codex-box" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "直接查看" }));
+
+    expect(await screen.findByText("正在直接查看 codex-box 的 1 条远程会话。")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "主机筛选" })).toHaveValue("Y29kZXgtYm94");
+    fireEvent.click(screen.getByRole("button", { name: "切换项目 /srv/direct-project" }));
+    expect(await screen.findByText("直接查看远端会话")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-project-host")).toHaveTextContent("codex-box");
+  });
+
+  test("syncs the focused session to a remote host from the detail view", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = String(input);
+
+      if (url === "/api/sessions?status=active") {
+        return jsonResponse({ sessions: [sessionAlpha] });
+      }
+
+      if (url === "/api/sessions/session-alpha") {
+        return jsonResponse(alphaDetail);
+      }
+
+      if (url === "/api/sessions/session-alpha/sync" && init?.method === "POST") {
+        expect(init.body).toBe(
+          JSON.stringify({
+            target: {
+              kind: "remote",
+              sshTarget: "target-box",
+              codexHomePath: "~/.codex",
+            },
+          }),
+        );
+        return jsonResponse({
+          sourceSessionId: "session-alpha",
+          targetHostId: "dGFyZ2V0LWJveA",
+          targetHostLabel: "target-box",
+          relativePath: "2026/03/29/session-alpha.jsonl",
+          sessions: [sessionAlpha],
+        });
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    renderAppWithLocale();
+
+    fireEvent.click(await screen.findByRole("button", { name: "切换项目 /work/project-alpha" }));
+    fireEvent.click(await screen.findByRole("button", { name: /请帮我恢复这个项目的会话/i }));
+
+    expect(await screen.findByRole("button", { name: "同步到远端" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "同步目标主机" }), {
+      target: { value: "target-box" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "同步到远端" }));
+
+    expect(await screen.findByText("已将这条会话同步到 target-box。")).toBeInTheDocument();
+  });
+
   test("switches localized chrome without translating stored session content", async () => {
     const expectedEnglishTime = new Date(sessionAlpha.startedAt).toLocaleString("en-US", {
       month: "2-digit",
@@ -458,6 +618,7 @@ describe("App", () => {
     const longSidebarSession: SessionRecord = {
       ...sessionAlpha,
       id: "session-long-sidebar",
+      threadId: "session-long-sidebar",
       userPromptExcerpt:
         "你现在是一位拥有十年以上经验的首席全栈架构师高级产品经理资深交互设计专家以及安全测试工程师请继续完整深度审查这个项目",
       latestAgentMessageExcerpt:
@@ -496,12 +657,12 @@ describe("App", () => {
       name: "切换项目 /Users/aikris/Documents/Codex/这是一个非常长的项目目录名称用于验证窄窗口下的截断显示/CodexMM",
     });
     const projectGroup = screen.getByTestId(
-      `project-group-${narrowSession.cwd}`,
+      `project-group-local-${narrowSession.cwd}`,
     );
     const projectName = within(projectToggle).getByTestId("sidebar-project-name");
     const projectPath = within(projectToggle).getByTestId("sidebar-project-path");
 
-    expect(projectGroup).toHaveStyle({ top: "0px", height: "48px", transform: "translateY(0px)" });
+    expect(projectGroup).toHaveStyle({ top: "0px", height: "60px", transform: "translateY(0px)" });
     expect(projectName).toHaveAttribute("title", "CodexMM");
     expect(projectPath).toHaveAttribute("title", narrowSession.cwd);
 
@@ -511,7 +672,7 @@ describe("App", () => {
     expect(sessionRow).toHaveStyle({
       top: "0px",
       height: "44px",
-      transform: "translateY(48px)",
+      transform: "translateY(60px)",
     });
   });
 

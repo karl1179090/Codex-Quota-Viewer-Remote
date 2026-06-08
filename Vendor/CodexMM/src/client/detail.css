@@ -27,6 +27,8 @@
 .reader-actions,
 .reader-actions__buttons,
 .reader-actions__mode-option,
+.session-sync-panel,
+.session-sync-panel__buttons,
 .resume-box,
 .thread-entry__header,
 .audit-inline,
@@ -176,6 +178,7 @@
 
 .summary-card span,
 .reader-actions__field span,
+.session-sync-panel__field span,
 .audit-inline span {
   font-size: 13px;
   color: var(--text-tertiary);
@@ -256,6 +259,29 @@
 
 .reader-actions__buttons {
   gap: 8px;
+}
+
+.session-sync-panel {
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.session-sync-panel__field {
+  flex: 1;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.session-sync-panel__buttons {
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .resume-box {
@@ -483,6 +509,8 @@
 
   .reader-actions,
   .reader-actions__buttons,
+  .session-sync-panel,
+  .session-sync-panel__buttons,
   .resume-box {
     flex-direction: column;
     align-items: stretch;
@@ -522,6 +550,7 @@
   }
 
   .reader-actions__mode-option,
+  .session-sync-panel__field,
   .detail-input {
     min-height: 44px;
   }

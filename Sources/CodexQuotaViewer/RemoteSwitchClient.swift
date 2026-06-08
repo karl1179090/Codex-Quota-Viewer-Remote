@@ -23,6 +23,17 @@ struct RemoteSwitchOperation: Equatable, Sendable {
         self.targetProviderID = targetProviderID
         self.terminateRemoteCodexProcesses = terminateRemoteCodexProcesses
     }
+
+    func withSettings(_ settings: RemoteSwitchSettings) -> RemoteSwitchOperation {
+        RemoteSwitchOperation(
+            settings: settings,
+            restorePointID: restorePointID,
+            authData: authData,
+            targetConfigData: targetConfigData,
+            targetProviderID: targetProviderID,
+            terminateRemoteCodexProcesses: terminateRemoteCodexProcesses
+        )
+    }
 }
 
 struct RemoteSwitchTargetResult: Equatable, Sendable {
@@ -79,6 +90,59 @@ struct RemoteSwitchResult: Equatable, Sendable {
     }
 }
 
+struct RemoteHistoryRepairTargetResult: Equatable, Sendable {
+    let sshTarget: String
+    let codexHomePath: String
+    let summary: HistoryMetadataRepairSummary
+}
+
+struct RemoteHistoryRepairResult: Equatable, Sendable {
+    let targets: [RemoteHistoryRepairTargetResult]
+
+    var sshTarget: String {
+        targets.map(\.sshTarget).joined(separator: ", ")
+    }
+
+    var totalSummary: HistoryMetadataRepairSummary {
+        targets.reduce(.empty) { $0 + $1.summary }
+    }
+}
+
+struct RemoteSwitchTargetFailure: Equatable, Sendable {
+    let sshTarget: String
+    let reason: String
+}
+
+struct RemoteSwitchPartialFailureError: LocalizedError, Equatable, Sendable {
+    let successes: [RemoteSwitchTargetResult]
+    let failures: [RemoteSwitchTargetFailure]
+
+    var errorDescription: String? {
+        let details = failures
+            .map { "\($0.sshTarget): \($0.reason)" }
+            .joined(separator: "; ")
+        return AppLocalization.localized(
+            en: "Remote sync failed on \(failures.count) host(s): \(details)",
+            zh: "\(failures.count) 台远端主机同步失败：\(details)"
+        )
+    }
+}
+
+struct RemoteHistoryRepairPartialFailureError: LocalizedError, Equatable, Sendable {
+    let successes: [RemoteHistoryRepairTargetResult]
+    let failures: [RemoteSwitchTargetFailure]
+
+    var errorDescription: String? {
+        let details = failures
+            .map { "\($0.sshTarget): \($0.reason)" }
+            .joined(separator: "; ")
+        return AppLocalization.localized(
+            en: "Remote history repair failed on \(failures.count) host(s): \(details)",
+            zh: "\(failures.count) 台远端主机历史修复失败：\(details)"
+        )
+    }
+}
+
 enum RemoteSwitchError: LocalizedError, Sendable {
     case missingSSHTarget
     case sshFailed(String)
@@ -114,6 +178,7 @@ enum RemoteSwitchError: LocalizedError, Sendable {
 protocol RemoteSwitching: Sendable {
     func perform(_ operation: RemoteSwitchOperation) async throws -> RemoteSwitchResult
     func rollback(settings: RemoteSwitchSettings, restorePointID: String) async throws
+    func repairHistoryMetadata(settings: RemoteSwitchSettings) async throws -> RemoteHistoryRepairResult
 }
 
 struct ProcessExecutionResult: Equatable, Sendable {
@@ -213,10 +278,41 @@ final class SSHRemoteSwitchClient: RemoteSwitching, Sendable {
             restorePointID: restorePointID
         )
         let outcomes = await runRollback(targets: targets, script: script)
-        if let failed = outcomes.first(where: { $0.error != nil }),
-           let error = failed.error {
-            throw error
+        if let failed = outcomes.first(where: { $0.failure != nil }),
+           let failure = failed.failure {
+            throw RemoteSwitchError.sshFailed("\(failure.sshTarget): \(failure.reason)")
         }
+    }
+
+    func repairHistoryMetadata(settings: RemoteSwitchSettings) async throws -> RemoteHistoryRepairResult {
+        let targets = settings.trimmedSSHTargets
+        guard !targets.isEmpty else {
+            throw RemoteSwitchError.missingSSHTarget
+        }
+
+        let script = remoteHistoryRepairScript(codexHomePath: settings.effectiveCodexHomePath)
+        let outcomes = await runHistoryRepair(
+            targets: targets,
+            script: script,
+            codexHomePath: settings.effectiveCodexHomePath
+        )
+        let targetOrder = Dictionary(uniqueKeysWithValues: targets.enumerated().map { ($0.element, $0.offset) })
+        let successes = outcomes
+            .compactMap(\.historyRepairResult)
+            .sorted {
+                (targetOrder[$0.sshTarget] ?? Int.max) < (targetOrder[$1.sshTarget] ?? Int.max)
+            }
+        let failures = outcomes
+            .compactMap(\.failure)
+            .sorted {
+                (targetOrder[$0.sshTarget] ?? Int.max) < (targetOrder[$1.sshTarget] ?? Int.max)
+            }
+
+        guard failures.isEmpty else {
+            throw RemoteHistoryRepairPartialFailureError(successes: successes, failures: failures)
+        }
+
+        return RemoteHistoryRepairResult(targets: successes)
     }
 
     private func runSSH(target: String, script: String) async throws -> String {
@@ -249,29 +345,23 @@ final class SSHRemoteSwitchClient: RemoteSwitching, Sendable {
             terminateRemoteCodexProcesses: operation.terminateRemoteCodexProcesses
         )
         let outcomes = await runPerform(targets: targets, script: script, codexHomePath: operation.settings.effectiveCodexHomePath)
-        let failed = outcomes.first { $0.error != nil }
-        let successes = outcomes.compactMap(\.result)
-
-        guard failed == nil else {
-            if let restorePointID = operation.restorePointID, !successes.isEmpty {
-                let rollbackSettings = RemoteSwitchSettings(
-                    enabled: true,
-                    sshTargets: successes.map(\.sshTarget),
-                    codexHomePath: operation.settings.effectiveCodexHomePath
-                )
-                try? await rollback(settings: rollbackSettings, restorePointID: restorePointID)
-            }
-
-            if let error = failed?.error {
-                throw error
-            }
-            throw RemoteSwitchError.sshFailed("unknown remote sync failure")
-        }
-
         let targetOrder = Dictionary(uniqueKeysWithValues: targets.enumerated().map { ($0.element, $0.offset) })
-        return successes.sorted {
-            (targetOrder[$0.sshTarget] ?? Int.max) < (targetOrder[$1.sshTarget] ?? Int.max)
+        let successes = outcomes
+            .compactMap(\.result)
+            .sorted {
+                (targetOrder[$0.sshTarget] ?? Int.max) < (targetOrder[$1.sshTarget] ?? Int.max)
+            }
+        let failures = outcomes
+            .compactMap(\.failure)
+            .sorted {
+                (targetOrder[$0.sshTarget] ?? Int.max) < (targetOrder[$1.sshTarget] ?? Int.max)
+            }
+
+        guard failures.isEmpty else {
+            throw RemoteSwitchPartialFailureError(successes: successes, failures: failures)
         }
+
+        return successes
     }
 
     private func runPerform(
@@ -293,12 +383,15 @@ final class SSHRemoteSwitchClient: RemoteSwitching, Sendable {
                                 warningCount: summary.warnings,
                                 terminatedCodexProcessCount: summary.terminatedCodexProcesses
                             ),
-                            error: nil
+                            failure: nil
                         )
                     } catch {
                         return RemoteSwitchTargetOutcome(
                             result: nil,
-                            error: RemoteSwitchError.sshFailed("\(target): \(error.localizedDescription)")
+                            failure: RemoteSwitchTargetFailure(
+                                sshTarget: target,
+                                reason: remoteSwitchFailureReason(for: error)
+                            )
                         )
                     }
                 }
@@ -321,11 +414,53 @@ final class SSHRemoteSwitchClient: RemoteSwitching, Sendable {
                 group.addTask {
                     do {
                         _ = try await self.runSSH(target: target, script: script)
-                        return RemoteSwitchTargetOutcome(result: nil, error: nil)
+                        return RemoteSwitchTargetOutcome(result: nil, failure: nil)
                     } catch {
                         return RemoteSwitchTargetOutcome(
                             result: nil,
-                            error: RemoteSwitchError.sshFailed("\(target): \(error.localizedDescription)")
+                            failure: RemoteSwitchTargetFailure(
+                                sshTarget: target,
+                                reason: remoteSwitchFailureReason(for: error)
+                            )
+                        )
+                    }
+                }
+            }
+
+            var outcomes: [RemoteSwitchTargetOutcome] = []
+            for await outcome in group {
+                outcomes.append(outcome)
+            }
+            return outcomes
+        }
+    }
+
+    private func runHistoryRepair(
+        targets: [String],
+        script: String,
+        codexHomePath: String
+    ) async -> [RemoteSwitchTargetOutcome] {
+        await withTaskGroup(of: RemoteSwitchTargetOutcome.self) { group in
+            for target in targets {
+                group.addTask {
+                    do {
+                        let response = try await self.runSSH(target: target, script: script)
+                        let summary = try self.parseRemoteHistoryRepairSummary(response)
+                        return RemoteSwitchTargetOutcome(
+                            historyRepairResult: RemoteHistoryRepairTargetResult(
+                                sshTarget: target,
+                                codexHomePath: codexHomePath,
+                                summary: summary
+                            ),
+                            failure: nil
+                        )
+                    } catch {
+                        return RemoteSwitchTargetOutcome(
+                            historyRepairResult: nil,
+                            failure: RemoteSwitchTargetFailure(
+                                sshTarget: target,
+                                reason: remoteSwitchFailureReason(for: error)
+                            )
                         )
                     }
                 }
@@ -364,6 +499,25 @@ final class SSHRemoteSwitchClient: RemoteSwitching, Sendable {
             terminatedCodexProcesses: values["terminated_codex_processes"] ?? 0
         )
     }
+
+    private func parseRemoteHistoryRepairSummary(_ response: String) throws -> HistoryMetadataRepairSummary {
+        guard let summaryLine = response
+            .components(separatedBy: .newlines)
+            .last(where: { $0.hasPrefix("REMOTE_HISTORY_REPAIR_SUMMARY ") }) else {
+            throw RemoteSwitchError.invalidResponse(response)
+        }
+
+        let summaryText = String(summaryLine.dropFirst("REMOTE_HISTORY_REPAIR_SUMMARY ".count))
+        guard let data = summaryText.data(using: .utf8) else {
+            throw RemoteSwitchError.invalidResponse(response)
+        }
+
+        do {
+            return try JSONDecoder().decode(HistoryMetadataRepairSummary.self, from: data)
+        } catch {
+            throw RemoteSwitchError.invalidResponse(response)
+        }
+    }
 }
 
 private struct RemoteScriptSummary: Equatable {
@@ -374,7 +528,36 @@ private struct RemoteScriptSummary: Equatable {
 
 private struct RemoteSwitchTargetOutcome: Sendable {
     let result: RemoteSwitchTargetResult?
-    let error: RemoteSwitchError?
+    let historyRepairResult: RemoteHistoryRepairTargetResult?
+    let failure: RemoteSwitchTargetFailure?
+
+    init(
+        result: RemoteSwitchTargetResult? = nil,
+        historyRepairResult: RemoteHistoryRepairTargetResult? = nil,
+        failure: RemoteSwitchTargetFailure?
+    ) {
+        self.result = result
+        self.historyRepairResult = historyRepairResult
+        self.failure = failure
+    }
+}
+
+private func remoteSwitchFailureReason(for error: Error) -> String {
+    if let remoteError = error as? RemoteSwitchError {
+        switch remoteError {
+        case .sshFailed(let message):
+            return message
+        case .missingSSHTarget, .invalidUTF8Payload, .invalidResponse:
+            return remoteError.errorDescription ?? remoteError.localizedDescription
+        }
+    }
+
+    if let localized = error as? LocalizedError,
+       let description = localized.errorDescription {
+        return description
+    }
+
+    return error.localizedDescription
 }
 
 private struct RemoteSwitchPayload: Equatable {
@@ -791,6 +974,332 @@ private func remotePerformScript(
     fi
     rm -rf "$TMP_DIR"
     echo "REMOTE_SWITCH_SUMMARY updated_rollouts=${UPDATED_ROLLOUTS:-0} warnings=${WARNINGS:-0} terminated_codex_processes=${TERMINATED_REMOTE_CODEX:-0}"
+    """
+}
+
+private func remoteHistoryRepairScript(codexHomePath: String) -> String {
+    let quotedCodexHome = shellSingleQuote(codexHomePath)
+    return """
+    set -eu
+    CODEX_HOME_INPUT=\(quotedCodexHome)
+    CODEX_HOME=$(python3 - "$CODEX_HOME_INPUT" <<'PY'
+    import os, sys
+    print(os.path.abspath(os.path.expanduser(sys.argv[1])))
+    PY
+    )
+    export CODEX_HOME
+    python3 <<'PY'
+    import datetime, json, os, shutil, sqlite3, tarfile, tempfile, time
+    from pathlib import Path
+
+    DEFAULT_PROVIDER = "openai"
+    DEFAULT_MODEL = "gpt-5"
+    UTC = datetime.timezone.utc
+    home = Path(os.environ["CODEX_HOME"])
+    if not home.exists():
+        raise SystemExit(f"Codex home does not exist: {home}")
+
+    config_path = home / "config.toml"
+    state_db = home / "state_5.sqlite"
+    session_index = home / "session_index.jsonl"
+    backup_dir = home / "history-sync-backups"
+    sessions_roots = [home / "sessions", home / "archived_sessions"]
+    stats = {
+        "dbThreadsSeen": 0,
+        "dbThreadsUpdated": 0,
+        "rolloutFilesSeen": 0,
+        "rolloutFilesUpdated": 0,
+        "indexRowsSeen": 0,
+        "indexRowsUpdated": 0,
+        "malformedJSONLines": 0,
+        "backupPath": None,
+    }
+
+    def strip_comment(value):
+        result = []
+        in_quotes = False
+        escaping = False
+        for char in value:
+            if char == "#" and not in_quotes:
+                break
+            result.append(char)
+            if escaping:
+                escaping = False
+                continue
+            if char == "\\\\":
+                escaping = True
+                continue
+            if char == '"':
+                in_quotes = not in_quotes
+        return "".join(result).strip()
+
+    def normalized_value(raw):
+        value = strip_comment(raw).strip()
+        if len(value) >= 2 and value[0] in ("'", '"') and value[-1] == value[0]:
+            return value[1:-1]
+        return value
+
+    def load_settings():
+        if not config_path.exists():
+            return DEFAULT_PROVIDER, DEFAULT_MODEL
+        data = {}
+        section = None
+        for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1].strip()
+                data.setdefault(section, {})
+                continue
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            target = data if section is None else data.setdefault(section, {})
+            target[key.strip()] = normalized_value(value)
+        defaults = data.get("defaults") if isinstance(data.get("defaults"), dict) else {}
+        provider = (
+            data.get("model_provider")
+            or data.get("modelProvider")
+            or data.get("provider")
+            or defaults.get("model_provider")
+            or defaults.get("provider")
+            or DEFAULT_PROVIDER
+        )
+        model = data.get("model") or defaults.get("model") or DEFAULT_MODEL
+        provider = str(provider).strip() or DEFAULT_PROVIDER
+        model = str(model).strip() or DEFAULT_MODEL
+        return provider, model
+
+    def rollout_files():
+        files = []
+        for root in sessions_roots:
+            if root.exists():
+                files.extend(sorted(root.rglob("rollout-*.jsonl")))
+        return sorted(files)
+
+    def backup_candidates():
+        for path in (config_path, state_db, session_index):
+            yield path
+        for path in rollout_files():
+            yield path
+
+    def create_backup():
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"codex-history-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
+        with tarfile.open(backup_path, "w:gz") as archive:
+            for path in backup_candidates():
+                if path.exists():
+                    archive.add(path, arcname=path.relative_to(home).as_posix())
+        stats["backupPath"] = str(backup_path)
+
+    def table_columns(connection, table):
+        return {row[1] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def sync_state_database(provider, model):
+        if not state_db.exists():
+            return
+        connection = sqlite3.connect(state_db, timeout=30.0)
+        try:
+            connection.execute("PRAGMA busy_timeout = 30000")
+            columns = table_columns(connection, "threads")
+            if not {"id", "model_provider", "model"}.issubset(columns):
+                return
+            stats["dbThreadsSeen"] = connection.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
+            stats["dbThreadsUpdated"] = connection.execute(
+                "SELECT COUNT(*) FROM threads WHERE model_provider IS NOT ? OR model IS NOT ?",
+                (provider, model),
+            ).fetchone()[0]
+            if stats["dbThreadsUpdated"]:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "UPDATE threads SET model_provider = ?, model = ? WHERE model_provider IS NOT ? OR model IS NOT ?",
+                    (provider, model, provider, model),
+                )
+                connection.commit()
+        finally:
+            connection.close()
+
+    def apply_model_fields(record, provider, model, add_missing):
+        changed = False
+        provider_keys = ("model_provider", "modelProvider", "provider")
+        model_keys = ("model", "model_name", "modelName")
+        for key in provider_keys:
+            if key in record and record.get(key) != provider:
+                record[key] = provider
+                changed = True
+        for key in model_keys:
+            if key in record and record.get(key) != model:
+                record[key] = model
+                changed = True
+        if add_missing and not any(key in record for key in provider_keys):
+            record["model_provider"] = provider
+            changed = True
+        if add_missing and not any(key in record for key in model_keys):
+            record["model"] = model
+            changed = True
+        return changed
+
+    def atomic_write_text(path, content):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\\n") as handle:
+                handle.write(content)
+            if path.exists():
+                shutil.copystat(path, temp_path, follow_symlinks=False)
+            else:
+                temp_path.chmod(0o644)
+            temp_path.replace(path)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+    def sync_rollout_files(provider, model):
+        for path in rollout_files():
+            stats["rolloutFilesSeen"] += 1
+            lines = path.read_text(encoding="utf-8").splitlines(True)
+            if not lines:
+                continue
+            try:
+                first = json.loads(lines[0])
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(first, dict) or first.get("type") != "session_meta":
+                continue
+            payload = first.get("payload")
+            target = payload if isinstance(payload, dict) else first
+            if not apply_model_fields(target, provider, model, True):
+                continue
+            if isinstance(payload, dict):
+                first["payload"] = target
+            lines[0] = json.dumps(first, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\\n"
+            atomic_write_text(path, "".join(lines))
+            stats["rolloutFilesUpdated"] += 1
+
+    def iso_utc(value):
+        timestamp = int(value)
+        if timestamp > 10000000000:
+            timestamp //= 1000
+        return datetime.datetime.fromtimestamp(timestamp, tz=UTC).isoformat().replace("+00:00", "Z")
+
+    def parse_index_timestamp(value):
+        if not value:
+            return datetime.datetime.fromtimestamp(0, tz=UTC)
+        try:
+            parsed = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return datetime.datetime.fromtimestamp(0, tz=UTC)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    def row_value(row, key):
+        return row[key] if key in row.keys() else None
+
+    def apply_thread_metadata(entry, row):
+        for key in ("cwd", "git_branch", "git_sha", "git_origin_url", "rollout_path"):
+            value = row_value(row, key)
+            if value:
+                entry[key] = str(value)
+        git = {
+            "branch": entry.get("git_branch"),
+            "commit_hash": entry.get("git_sha"),
+            "repository_url": entry.get("git_origin_url"),
+        }
+        git = {key: str(value) for key, value in git.items() if value}
+        if git:
+            existing = entry.get("git") if isinstance(entry.get("git"), dict) else {}
+            existing.update(git)
+            entry["git"] = existing
+
+    def read_index_entries_from_database(existing_entries):
+        if not state_db.exists():
+            return None
+        connection = sqlite3.connect(state_db, timeout=30.0)
+        try:
+            connection.row_factory = sqlite3.Row
+            columns = table_columns(connection, "threads")
+            if "id" not in columns:
+                return None
+            selected = ["id"]
+            for column in ("title", "updated_at", "cwd", "git_branch", "git_sha", "git_origin_url", "rollout_path"):
+                if column in columns:
+                    selected.append(column)
+            where_sql = "WHERE archived = 0" if "archived" in columns else ""
+            rows = connection.execute(f"SELECT {', '.join(selected)} FROM threads {where_sql} ORDER BY id ASC").fetchall()
+        finally:
+            connection.close()
+        entries = []
+        for row in rows:
+            thread_id = str(row["id"])
+            entry = dict(existing_entries.get(thread_id) or {})
+            title = str(row["title"]) if "title" in row.keys() and row["title"] else thread_id
+            updated_at = iso_utc(row["updated_at"]) if "updated_at" in row.keys() and row["updated_at"] else str(entry.get("updated_at") or "")
+            entry["id"] = thread_id
+            entry["thread_name"] = str(entry.get("thread_name") or title)
+            entry["updated_at"] = updated_at
+            apply_thread_metadata(entry, row)
+            entries.append(entry)
+        return entries
+
+    def sync_session_index(provider, model):
+        if not session_index.exists() and not state_db.exists():
+            return
+        existing_lines = session_index.read_text(encoding="utf-8").splitlines() if session_index.exists() else []
+        existing_entries = {}
+        existing_order = []
+        for line in existing_lines:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                stats["malformedJSONLines"] += 1
+                continue
+            if not isinstance(record, dict):
+                continue
+            thread_id = str(record.get("id") or "").strip()
+            if not thread_id:
+                continue
+            stats["indexRowsSeen"] += 1
+            existing_entries[thread_id] = record
+            existing_order.append(thread_id)
+        db_entries = read_index_entries_from_database(existing_entries)
+        if db_entries is None:
+            output = []
+            for thread_id in existing_order:
+                record = dict(existing_entries[thread_id])
+                apply_model_fields(record, provider, model, False)
+                output.append(record)
+        else:
+            db_ids = {str(entry["id"]) for entry in db_entries}
+            index_only = [existing_entries[thread_id] for thread_id in existing_order if thread_id not in db_ids]
+            output = db_entries + index_only
+            for entry in output:
+                apply_model_fields(entry, provider, model, False)
+            output.sort(key=lambda item: (parse_index_timestamp(str(item.get("updated_at") or "")), str(item.get("id") or "")))
+        current_text = "\\n".join(existing_lines)
+        desired = "\\n".join(json.dumps(entry, ensure_ascii=False, separators=(",", ":"), sort_keys=True) for entry in output)
+        if desired:
+            desired += "\\n"
+        if current_text and not current_text.endswith("\\n"):
+            current_text += "\\n"
+        if desired != current_text:
+            stats["indexRowsUpdated"] = len(output)
+            atomic_write_text(session_index, desired)
+
+    provider, model = load_settings()
+    create_backup()
+    sync_state_database(provider, model)
+    sync_rollout_files(provider, model)
+    sync_session_index(provider, model)
+    print("REMOTE_HISTORY_REPAIR_SUMMARY " + json.dumps(stats, separators=(",", ":")))
+    PY
+    if [ "${CODEX_QUOTA_VIEWER_SKIP_APP_SERVER_PKILL:-0}" != "1" ]; then
+      pkill -f 'codex.*app-server' 2>/dev/null || true
+    fi
     """
 }
 

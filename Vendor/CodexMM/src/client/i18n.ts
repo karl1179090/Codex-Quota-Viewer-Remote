@@ -25,6 +25,16 @@ export type TranslationSet = {
     repairingOfficial: string;
     refresh: string;
     refreshing: string;
+    remoteHostLabel: string;
+    remoteHostPlaceholder: string;
+    remoteCodexHomeLabel: string;
+    remoteCodexHomePlaceholder: string;
+    importRemote: string;
+    importingRemote: string;
+    viewRemote: string;
+    viewingRemote: string;
+    hostFilterLabel: string;
+    allHosts: string;
     searchLabel: string;
     searchPlaceholder: string;
     statusFilterLabel: string;
@@ -67,6 +77,11 @@ export type TranslationSet = {
     repairCurrentThread: string;
     officialSync: string;
     copyCommand: string;
+    syncTargetHost: string;
+    syncTargetHostPlaceholder: string;
+    syncTargetCodexHome: string;
+    syncToRemote: string;
+    syncToLocal: string;
     emptyTimeline: string;
     loadedTimeline: (loaded: number, total: number) => string;
     loadingMore: string;
@@ -83,6 +98,7 @@ export type TranslationSet = {
     officialSummaryRepairNeeded: string;
     officialSummaryHidden: string;
     officialSummaryHiddenRepairNeeded: string;
+    officialSummaryRemoteCopy: string;
     officialIssueMissingThread: string;
     officialIssueWrongRolloutPath: string;
     officialIssueArchivedFlagMismatch: string;
@@ -102,9 +118,13 @@ export type TranslationSet = {
     currentRestored: string;
     currentArchived: string;
     resumeCopied: string;
+    remoteImportSuccess: (host: string, count: number) => string;
+    remotePreviewSuccess: (host: string, count: number) => string;
+    sessionSyncedToLocal: string;
+    sessionSyncedToRemote: (host: string) => string;
   };
   statuses: Record<"active" | "archived" | "deleted_pending_purge" | "restorable", string>;
-  officialStates: Record<"synced" | "repair_needed" | "hidden" | "unknown", string>;
+  officialStates: Record<"synced" | "repair_needed" | "hidden" | "remote_copy" | "unknown", string>;
   errors: {
     unknown: string;
     restoreTarget: Record<RestoreTargetErrorKey, string>;
@@ -114,6 +134,10 @@ export type TranslationSet = {
     sessionHasNoFileToDelete: string;
     sessionIsNotRestorable: string;
     unsupportedRestoreMode: string;
+    invalidRemoteHost: string;
+    remoteSSHFailed: string;
+    remoteSessionImportFailed: string;
+    remoteSyncTargetRequired: string;
     unknownSession: (id: string) => string;
     managedSessionPathOutside: (label: string) => string;
     pathOutsideManagedRoot: (candidate: string) => string;
@@ -165,6 +189,16 @@ const translations: Record<UiLanguage, TranslationSet> = {
       repairingOfficial: "Repairing...",
       refresh: "Refresh",
       refreshing: "Refreshing...",
+      remoteHostLabel: "Remote SSH host",
+      remoteHostPlaceholder: "SSH Host alias",
+      remoteCodexHomeLabel: "Remote Codex home",
+      remoteCodexHomePlaceholder: "~/.codex",
+      importRemote: "Pull remote",
+      importingRemote: "Pulling...",
+      viewRemote: "View remote",
+      viewingRemote: "Viewing...",
+      hostFilterLabel: "Host filter",
+      allHosts: "All hosts",
       searchLabel: "Search sessions, paths, or excerpts",
       searchPlaceholder: "Search sessions, paths, or excerpts",
       statusFilterLabel: "Status filters",
@@ -208,6 +242,11 @@ const translations: Record<UiLanguage, TranslationSet> = {
       repairCurrentThread: "Repair this thread",
       officialSync: "Official Codex sync",
       copyCommand: "Copy command",
+      syncTargetHost: "Sync target host",
+      syncTargetHostPlaceholder: "SSH Host alias",
+      syncTargetCodexHome: "Target Codex home",
+      syncToRemote: "Sync to remote",
+      syncToLocal: "Sync to this Mac",
       emptyTimeline: "This session has no thread content to display yet.",
       loadedTimeline: (loaded, total) => `Loaded ${loaded} / ${total}`,
       loadingMore: "Loading more...",
@@ -233,6 +272,8 @@ const translations: Record<UiLanguage, TranslationSet> = {
         "This session only has a snapshot backup left and is now hidden from Official Codex lists.",
       officialSummaryHiddenRepairNeeded:
         "This session only has a snapshot backup left and should no longer appear in Official Codex lists.",
+      officialSummaryRemoteCopy:
+        "This session belongs to a remote host and is not written into local Official Codex lists.",
       officialIssueMissingThread: "Official threads is missing this thread record.",
       officialIssueWrongRolloutPath: "Official rollout_path points to the wrong location.",
       officialIssueArchivedFlagMismatch:
@@ -259,6 +300,12 @@ const translations: Record<UiLanguage, TranslationSet> = {
       currentRestored: "The current session has been restored to a Codex-recognized location.",
       currentArchived: "The current session has been archived.",
       resumeCopied: "Copied the resume command to the clipboard.",
+      remoteImportSuccess: (host, count) =>
+        `Pulled ${count} session${count === 1 ? "" : "s"} from ${host}.`,
+      remotePreviewSuccess: (host, count) =>
+        `Viewing ${count} remote session${count === 1 ? "" : "s"} from ${host}.`,
+      sessionSyncedToLocal: "Synced this session to this Mac.",
+      sessionSyncedToRemote: (host) => `Synced this session to ${host}.`,
     },
     statuses: {
       active: "Active",
@@ -270,6 +317,7 @@ const translations: Record<UiLanguage, TranslationSet> = {
       synced: "Synced",
       repair_needed: "Needs repair",
       hidden: "Hidden",
+      remote_copy: "Remote copy",
       unknown: "Unknown",
     },
     errors: {
@@ -287,6 +335,10 @@ const translations: Record<UiLanguage, TranslationSet> = {
       sessionHasNoFileToDelete: "This session has no file available to move to trash.",
       sessionIsNotRestorable: "This session is not restorable.",
       unsupportedRestoreMode: "The restore mode is not supported. Refresh the page and try again.",
+      invalidRemoteHost: "Enter one SSH Host alias from your SSH config.",
+      remoteSSHFailed: "Remote SSH connection failed.",
+      remoteSessionImportFailed: "Remote sessions could not be imported.",
+      remoteSyncTargetRequired: "Choose a local or remote sync target.",
       unknownSession: (id) => `Unknown session: ${id}`,
       managedSessionPathOutside: (label) =>
         `The ${label} session path is outside the managed roots. Refusing to continue.`,
@@ -328,6 +380,16 @@ const translations: Record<UiLanguage, TranslationSet> = {
       repairingOfficial: "修复中...",
       refresh: "刷新",
       refreshing: "刷新中...",
+      remoteHostLabel: "远程 SSH 主机",
+      remoteHostPlaceholder: "SSH Host 别名",
+      remoteCodexHomeLabel: "远程 Codex 目录",
+      remoteCodexHomePlaceholder: "~/.codex",
+      importRemote: "拉取远端",
+      importingRemote: "拉取中...",
+      viewRemote: "直接查看",
+      viewingRemote: "查看中...",
+      hostFilterLabel: "主机筛选",
+      allHosts: "全部主机",
       searchLabel: "搜索会话、路径或摘要",
       searchPlaceholder: "搜索会话、路径或摘要",
       statusFilterLabel: "状态筛选",
@@ -370,6 +432,11 @@ const translations: Record<UiLanguage, TranslationSet> = {
       repairCurrentThread: "修复这个线程",
       officialSync: "官方 Codex 同步",
       copyCommand: "复制命令",
+      syncTargetHost: "同步目标主机",
+      syncTargetHostPlaceholder: "SSH Host 别名",
+      syncTargetCodexHome: "目标 Codex 目录",
+      syncToRemote: "同步到远端",
+      syncToLocal: "同步到本机",
       emptyTimeline: "这个会话还没有可展示的线程内容。",
       loadedTimeline: (loaded, total) => `已加载 ${loaded} / ${total} 条`,
       loadingMore: "正在加载更多...",
@@ -392,6 +459,8 @@ const translations: Record<UiLanguage, TranslationSet> = {
       officialSummaryHidden: "这条会话只剩 snapshot 备份，当前已从官方 Codex 列表隐藏。",
       officialSummaryHiddenRepairNeeded:
         "这条会话只剩 snapshot 备份，当前不应继续出现在官方 Codex 列表中。",
+      officialSummaryRemoteCopy:
+        "这条会话属于远程主机，不会写入本机官方 Codex 列表。",
       officialIssueMissingThread: "官方 threads 缺少这条线程记录。",
       officialIssueWrongRolloutPath: "官方 rollout_path 指向了错误位置。",
       officialIssueArchivedFlagMismatch: "官方 archived 标记与当前状态不一致。",
@@ -413,6 +482,10 @@ const translations: Record<UiLanguage, TranslationSet> = {
       currentRestored: "当前会话已恢复到 Codex 可识别位置。",
       currentArchived: "当前会话已归档。",
       resumeCopied: "resume 命令已复制到剪贴板。",
+      remoteImportSuccess: (host, count) => `已从 ${host} 拉取 ${count} 条会话。`,
+      remotePreviewSuccess: (host, count) => `正在直接查看 ${host} 的 ${count} 条远程会话。`,
+      sessionSyncedToLocal: "已将这条会话同步到本机。",
+      sessionSyncedToRemote: (host) => `已将这条会话同步到 ${host}。`,
     },
     statuses: {
       active: "活动",
@@ -424,6 +497,7 @@ const translations: Record<UiLanguage, TranslationSet> = {
       synced: "已同步",
       repair_needed: "待修复",
       hidden: "已隐藏",
+      remote_copy: "远程副本",
       unknown: "未知",
     },
     errors: {
@@ -439,6 +513,10 @@ const translations: Record<UiLanguage, TranslationSet> = {
       sessionHasNoFileToDelete: "这条会话当前没有可移到回收站的文件。",
       sessionIsNotRestorable: "这条会话当前不可恢复。",
       unsupportedRestoreMode: "不支持的恢复模式，请刷新页面后重试。",
+      invalidRemoteHost: "请输入 SSH 配置中的单个 Host 别名。",
+      remoteSSHFailed: "远程 SSH 连接失败。",
+      remoteSessionImportFailed: "远程会话导入失败。",
+      remoteSyncTargetRequired: "请选择本机或远程同步目标。",
       unknownSession: (id) => `未知会话：${id}`,
       managedSessionPathOutside: (label) => `会话 ${label} 文件路径超出了受管目录，已拒绝继续操作。`,
       pathOutsideManagedRoot: (candidate) => `路径超出了受管目录：${candidate}`,

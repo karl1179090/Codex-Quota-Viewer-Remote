@@ -984,7 +984,7 @@ private func mapRPCError(code: Int, detail: String) -> CodexRPCError {
     return .rpc(detail)
 }
 
-private func sendRequest(
+func sendCodexRPCRequest(
     id: String,
     method: String,
     params: [String: Any],
@@ -998,8 +998,21 @@ private func sendRequest(
     ]
 
     let data = try JSONSerialization.data(withJSONObject: body)
-    try handle.write(contentsOf: data)
-    try handle.write(contentsOf: Data([0x0A]))
+    do {
+        try handle.write(contentsOf: data)
+        try handle.write(contentsOf: Data([0x0A]))
+    } catch {
+        throw CodexRPCError.invalidResponse("app-server input closed: \(error.localizedDescription)")
+    }
+}
+
+private func sendRequest(
+    id: String,
+    method: String,
+    params: [String: Any],
+    to handle: FileHandle
+) throws {
+    try sendCodexRPCRequest(id: id, method: method, params: params, to: handle)
 }
 
 private func decodeMessage(from line: String) throws -> [String: Any] {

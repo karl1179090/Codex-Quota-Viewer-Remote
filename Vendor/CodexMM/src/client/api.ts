@@ -4,7 +4,12 @@ import type {
   ApiErrorResponse,
   BatchSessionActionResponse,
   OfficialRepairResponse,
+  RemoteSessionImportRequest,
+  RemoteSessionImportResponse,
+  RemoteSessionPreviewResponse,
   RestoreRequest,
+  SessionSyncRequest,
+  SessionSyncResponse,
   SessionDetail,
   SessionFilters,
   SessionRecord,
@@ -108,6 +113,10 @@ export async function listSessions(filters: SessionFilters = {}) {
     query.set("cwd", filters.cwd);
   }
 
+  if (filters.hostId) {
+    query.set("hostId", filters.hostId);
+  }
+
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   const response = await fetch(`/api/sessions${suffix}`);
   return parseJson<{ sessions: SessionRecord[] }>(response);
@@ -121,6 +130,36 @@ export async function repairOfficialThreads(sessionIds: string[] = []) {
   });
 
   return parseJson<OfficialRepairResponse>(response);
+}
+
+export async function importRemoteSessions(request: RemoteSessionImportRequest) {
+  const response = await fetch("/api/remote-sessions/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+  return parseJson<RemoteSessionImportResponse>(response);
+}
+
+export async function previewRemoteSessions(request: RemoteSessionImportRequest) {
+  const response = await fetch("/api/remote-sessions/preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+  return parseJson<RemoteSessionPreviewResponse>(response);
+}
+
+export async function syncSession(id: string, request: SessionSyncRequest) {
+  const response = await fetch(`/api/sessions/${id}/sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+
+  return parseJson<SessionSyncResponse>(response);
 }
 
 export async function fetchUiConfig() {
@@ -172,6 +211,10 @@ function readErrorDetails(details: unknown): ApiErrorDetails | undefined {
 
   if (typeof (details as { sessionId?: unknown }).sessionId === "string") {
     normalized.sessionId = (details as { sessionId: string }).sessionId;
+  }
+
+  if (typeof (details as { host?: unknown }).host === "string") {
+    normalized.host = (details as { host: string }).host;
   }
 
   const label = (details as { label?: unknown }).label;

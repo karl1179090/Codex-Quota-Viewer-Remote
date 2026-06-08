@@ -19,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+installRuntimeSignalHandlers()
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.setActivationPolicy(.accessory)

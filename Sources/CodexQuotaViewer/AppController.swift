@@ -848,6 +848,66 @@ final class AppController: NSObject, NSMenuDelegate {
         }
     }
 
+    private func confirmRemoteSwitchFailureResolution(
+        failure: RemoteSwitchPartialFailureError,
+        restorePointID: String?
+    ) -> RemoteSwitchFailureResolution {
+        foregroundPresentationController.runModal {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = AppLocalization.localized(
+                en: "Remote sync failed",
+                zh: "远端同步失败"
+            )
+            let failureLines = failure.failures.map { failure in
+                "- \(failure.sshTarget): \(failure.reason)"
+            }
+            let successText = failure.successes.isEmpty
+                ? AppLocalization.localized(
+                    en: "No remote host has been updated successfully yet.",
+                    zh: "目前还没有远端主机同步成功。"
+                )
+                : AppLocalization.localized(
+                    en: "Successful so far: \(failure.successes.map(\.sshTarget).joined(separator: ", ")).",
+                    zh: "已成功同步：\(failure.successes.map(\.sshTarget).joined(separator: ", "))。"
+                )
+            let rollbackText: String
+            if let restorePointID {
+                rollbackText = AppLocalization.localized(
+                    en: "Rollback restores successful remote hosts to restore point \(restorePointID).",
+                    zh: "回退会把已成功的远端主机恢复到还原点 \(restorePointID)。"
+                )
+            } else {
+                rollbackText = AppLocalization.localized(
+                    en: "Rollback is only available when a remote restore point exists; this direct switch has no remote backup.",
+                    zh: "只有存在远端还原点时才能回退；本次直接切换没有远端备份。"
+                )
+            }
+            alert.informativeText = [
+                AppLocalization.localized(en: "Failed hosts:", zh: "失败主机："),
+                failureLines.joined(separator: "\n"),
+                successText,
+                rollbackText,
+                AppLocalization.localized(
+                    en: "Retry tries only the failed hosts. Cancel keeps successful remote changes and continues the local switch.",
+                    zh: "重试只会重试失败主机。取消会保留已成功的远端变更，并继续本机切换。"
+                ),
+            ].joined(separator: "\n")
+            alert.addButton(withTitle: AppLocalization.localized(en: "Retry", zh: "重试"))
+            alert.addButton(withTitle: AppLocalization.localized(en: "Rollback", zh: "回退"))
+            alert.addButton(withTitle: AppLocalization.localized(en: "Cancel (Keep Successful)", zh: "取消（保留成功的）"))
+
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                return .retry
+            case .alertSecondButtonReturn:
+                return .rollback
+            default:
+                return .keepSuccessful
+            }
+        }
+    }
+
     private func confirmRollback(restorePoint: RestorePointManifest) -> Bool {
         foregroundPresentationController.runModal {
             let alert = NSAlert()
@@ -884,6 +944,13 @@ final class AppController: NSObject, NSMenuDelegate {
         }
         guard let remote = result.remoteResult else {
             return base
+        }
+
+        guard !remote.targets.isEmpty else {
+            return base + AppLocalization.localized(
+                en: " No remote hosts were synced.",
+                zh: " 没有远端主机同步成功。"
+            )
         }
 
         let remoteText = AppLocalization.localized(
@@ -1395,7 +1462,16 @@ final class AppController: NSObject, NSMenuDelegate {
                     targetProfile: targetProfile,
                     remoteSettings: self.settings.remoteSwitch,
                     backupStrategy: backupStrategy,
-                    terminateRemoteCodexProcesses: terminateRemoteCodexProcesses
+                    terminateRemoteCodexProcesses: terminateRemoteCodexProcesses,
+                    remoteFailureResolutionProvider: { [weak self] failure, restorePointID in
+                        guard let self else {
+                            return .rollback
+                        }
+                        return self.confirmRemoteSwitchFailureResolution(
+                            failure: failure,
+                            restorePointID: restorePointID
+                        )
+                    }
                 )
                 if targetProfile.source == .vault {
                     let writer: FileDataWriting
@@ -1636,6 +1712,238 @@ final class AppController: NSObject, NSMenuDelegate {
         }
     }
 
+    private func syncCurrentLocalConfigToRemoteHosts() {
+        guard beginForegroundOperation(.remoteSync) else {
+            return
+        }
+
+        let targets = settings.remoteSwitch.trimmedSSHTargets
+        guard !targets.isEmpty else {
+            endForegroundOperation(.remoteSync)
+            statusNotice = MenuNotice(
+                kind: .warning,
+                message: AppLocalization.localized(
+                    en: "Select at least one remote host before syncing the current local config.",
+                    zh: "请先选择至少一台远程主机，再同步当前本机配置。"
+                )
+            )
+            rebuildMenu(reason: "remote-sync-missing-target")
+            return
+        }
+
+        let syncSettings = RemoteSwitchSettings(
+            enabled: true,
+            sshTargets: targets,
+            codexHomePath: settings.remoteSwitch.effectiveCodexHomePath
+        )
+        presentSafeSwitchNotice(
+            MenuNotice(
+                kind: .info,
+                message: AppLocalization.localized(
+                    en: "Syncing current local config to remote hosts…",
+                    zh: "正在同步当前本机配置到远程主机…"
+                )
+            ),
+            lifetime: .operationBound
+        )
+        refreshSettingsUI()
+        rebuildMenu(reason: "remote-sync-current-start")
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                let result = try await self.switchOrchestrator.syncCurrentRuntimeToRemote(
+                    remoteSettings: syncSettings,
+                    remoteFailureResolutionProvider: { [weak self] failure, restorePointID in
+                        guard let self else {
+                            return .rollback
+                        }
+                        return self.confirmRemoteSwitchFailureResolution(
+                            failure: failure,
+                            restorePointID: restorePointID
+                        )
+                    }
+                )
+                self.presentSafeSwitchNotice(
+                    MenuNotice(
+                        kind: .info,
+                        message: self.remoteCurrentSyncSuccessMessage(result)
+                    ),
+                    lifetime: .timed(4)
+                )
+                AppLog.safeSwitch.info("Remote current config sync completed targets=\(result.sshTarget, privacy: .public)")
+            } catch {
+                AppLog.safeSwitch.error("Remote current config sync failed: \(self.userFacingMessage(for: error), privacy: .public)")
+                self.presentSafeSwitchNotice(
+                    self.localizedErrorNotice(
+                        en: "Remote current config sync failed",
+                        zh: "远程主机同步当前本机配置失败",
+                        error: error
+                    ),
+                    lifetime: .persistent
+                )
+            }
+
+            self.endForegroundOperation(.remoteSync)
+            self.refreshSettingsUI()
+            self.rebuildMenu(reason: "remote-sync-current-finished")
+        }
+    }
+
+    private func remoteCurrentSyncSuccessMessage(_ result: RemoteSwitchResult) -> String {
+        guard !result.targets.isEmpty else {
+            return AppLocalization.localized(
+                en: "No remote hosts were synced.",
+                zh: "没有远端主机同步成功。"
+            )
+        }
+
+        let warningText = result.warningCount > 0
+            ? AppLocalization.localized(
+                en: " \(result.warningCount) remote warning(s).",
+                zh: " 远端有 \(result.warningCount) 个警告。"
+            )
+            : ""
+        return AppLocalization.localized(
+            en: "Synced current local config to \(result.sshTarget); updated \(result.updatedRolloutCount) remote rollout(s).",
+            zh: "已将当前本机配置同步到 \(result.sshTarget)，更新 \(result.updatedRolloutCount) 个远端 rollout。"
+        ) + warningText
+    }
+
+    private func repairHistoryMetadata(scope: HistoryMetadataRepairScope) {
+        guard beginForegroundOperation(.repair) else {
+            return
+        }
+
+        let targets = settings.remoteSwitch.trimmedSSHTargets
+        guard !scope.includesRemote || !targets.isEmpty else {
+            endForegroundOperation(.repair)
+            statusNotice = MenuNotice(
+                kind: .warning,
+                message: AppLocalization.localized(
+                    en: "Select at least one remote host before repairing remote history metadata.",
+                    zh: "请先选择至少一台远程主机，再修复远程历史元数据。"
+                )
+            )
+            rebuildMenu(reason: "history-repair-missing-target")
+            return
+        }
+
+        let remoteSettings = RemoteSwitchSettings(
+            enabled: true,
+            sshTargets: targets,
+            codexHomePath: settings.remoteSwitch.effectiveCodexHomePath
+        )
+        presentSafeSwitchNotice(
+            MenuNotice(
+                kind: .info,
+                message: historyRepairStartMessage(scope: scope)
+            ),
+            lifetime: .operationBound
+        )
+        refreshSettingsUI()
+        rebuildMenu(reason: "history-repair-start")
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                let result = try await self.switchOrchestrator.repairHistoryMetadata(
+                    scope: scope,
+                    remoteSettings: remoteSettings
+                )
+                self.presentSafeSwitchNotice(
+                    MenuNotice(
+                        kind: .info,
+                        message: self.historyRepairSuccessMessage(result)
+                    ),
+                    lifetime: .timed(5)
+                )
+                if scope.includesLocal {
+                    self.cachedThreadSyncStatus = .healthy(expectedProvider: self.currentExpectedProviderID)
+                }
+                AppLog.safeSwitch.info("History metadata repair completed scope=\(scope.rawValue, privacy: .public)")
+            } catch {
+                AppLog.safeSwitch.error("History metadata repair failed: \(self.userFacingMessage(for: error), privacy: .public)")
+                self.presentSafeSwitchNotice(
+                    self.localizedErrorNotice(
+                        en: "History metadata repair failed",
+                        zh: "历史元数据修复失败",
+                        error: error
+                    ),
+                    lifetime: .persistent
+                )
+            }
+
+            self.endForegroundOperation(.repair)
+            self.refreshAllProfiles()
+            self.refreshSettingsUI()
+            self.rebuildMenu(reason: "history-repair-finished")
+        }
+    }
+
+    private func historyRepairStartMessage(scope: HistoryMetadataRepairScope) -> String {
+        switch scope {
+        case .local:
+            return AppLocalization.localized(
+                en: "Repairing local Codex history model metadata…",
+                zh: "正在修复本机 Codex 历史模型元数据…"
+            )
+        case .remote:
+            return AppLocalization.localized(
+                en: "Repairing remote Codex history model metadata…",
+                zh: "正在修复远程 Codex 历史模型元数据…"
+            )
+        case .all:
+            return AppLocalization.localized(
+                en: "Repairing local and remote Codex history model metadata…",
+                zh: "正在修复本机和远程 Codex 历史模型元数据…"
+            )
+        }
+    }
+
+    private func historyRepairSuccessMessage(_ result: HistoryMetadataRepairOperationResult) -> String {
+        var parts: [String] = []
+        if let localResult = result.localResult {
+            parts.append(
+                AppLocalization.localized(
+                    en: "This Mac: \(historyRepairSummaryText(localResult.summary)); restore point \(localResult.restorePoint.id).",
+                    zh: "本机：\(historyRepairSummaryText(localResult.summary))；还原点 \(localResult.restorePoint.id)。"
+                )
+            )
+        }
+        if let remoteResult = result.remoteResult {
+            let targetText = remoteResult.sshTarget.isEmpty
+                ? AppLocalization.localized(en: "remote hosts", zh: "远程主机")
+                : remoteResult.sshTarget
+            parts.append(
+                AppLocalization.localized(
+                    en: "Remote \(targetText): \(historyRepairSummaryText(remoteResult.totalSummary)).",
+                    zh: "远程 \(targetText)：\(historyRepairSummaryText(remoteResult.totalSummary))。"
+                )
+            )
+        }
+
+        return AppLocalization.localized(
+            en: "History metadata repair complete. \(parts.joined(separator: " "))",
+            zh: "历史元数据修复完成。\(parts.joined(separator: " "))"
+        )
+    }
+
+    private func historyRepairSummaryText(_ summary: HistoryMetadataRepairSummary) -> String {
+        let malformedText = summary.malformedJSONLines > 0
+            ? AppLocalization.localized(
+                en: ", malformed index lines \(summary.malformedJSONLines)",
+                zh: "，异常索引行 \(summary.malformedJSONLines)"
+            )
+            : ""
+        return AppLocalization.localized(
+            en: "DB \(summary.dbThreadsUpdated)/\(summary.dbThreadsSeen), rollout \(summary.rolloutFilesUpdated)/\(summary.rolloutFilesSeen), index \(summary.indexRowsUpdated)/\(summary.indexRowsSeen)\(malformedText)",
+            zh: "数据库 \(summary.dbThreadsUpdated)/\(summary.dbThreadsSeen)，rollout \(summary.rolloutFilesUpdated)/\(summary.rolloutFilesSeen)，索引 \(summary.indexRowsUpdated)/\(summary.indexRowsSeen)\(malformedText)"
+        )
+    }
+
     private func openVaultFolder() {
         do {
             try FileManager.default.createDirectory(
@@ -1723,6 +2031,12 @@ final class AppController: NSObject, NSMenuDelegate {
             },
             onOpenVaultFolder: { [weak self] in
                 self?.openVaultFolder()
+            },
+            onSyncCurrentRemoteConfig: { [weak self] in
+                self?.syncCurrentLocalConfigToRemoteHosts()
+            },
+            onRepairHistoryMetadata: { [weak self] scope in
+                self?.repairHistoryMetadata(scope: scope)
             },
             onWindowClosed: { [weak self] in
                 self?.foregroundPresentationController.endIfPossible()

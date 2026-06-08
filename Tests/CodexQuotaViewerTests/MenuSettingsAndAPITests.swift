@@ -1088,6 +1088,96 @@ func settingsWindowControllerUsesSidebarPages() throws {
 
 @MainActor
 @Test
+func settingsWindowControllerAdvancedSyncButtonInvokesCallback() throws {
+    let controller = SettingsWindowController(
+        settings: AppSettings(
+            remoteSwitch: RemoteSwitchSettings(
+                enabled: false,
+                sshTargets: ["manual-box"]
+            )
+        ),
+        accountPanelState: SettingsAccountPanelState(importStatusText: "", sections: [], actionsEnabled: true)
+    )
+    var invocationCount = 0
+    controller.onSyncCurrentRemoteConfig = {
+        invocationCount += 1
+    }
+
+    let contentView = try #require(controller.window?.contentView)
+    let button = try #require(
+        findView(in: contentView, identifier: "settings.advanced.sync-current-remote") as? NSButton
+    )
+
+    #expect(button.isEnabled)
+    button.sendAction(button.action, to: button.target)
+
+    #expect(invocationCount == 1)
+}
+
+@MainActor
+@Test
+func settingsWindowControllerAdvancedHistoryRepairButtonsInvokeCallbacks() throws {
+    let controller = SettingsWindowController(
+        settings: AppSettings(
+            remoteSwitch: RemoteSwitchSettings(
+                enabled: false,
+                sshTargets: ["manual-box"]
+            )
+        ),
+        accountPanelState: SettingsAccountPanelState(importStatusText: "", sections: [], actionsEnabled: true)
+    )
+    var scopes: [HistoryMetadataRepairScope] = []
+    controller.onRepairHistoryMetadata = { scope in
+        scopes.append(scope)
+    }
+
+    let contentView = try #require(controller.window?.contentView)
+    let localButton = try #require(
+        findView(in: contentView, identifier: "settings.advanced.repair-history.local") as? NSButton
+    )
+    let remoteButton = try #require(
+        findView(in: contentView, identifier: "settings.advanced.repair-history.remote") as? NSButton
+    )
+    let allButton = try #require(
+        findView(in: contentView, identifier: "settings.advanced.repair-history.all") as? NSButton
+    )
+
+    #expect(localButton.isEnabled)
+    #expect(remoteButton.isEnabled)
+    #expect(allButton.isEnabled)
+    localButton.sendAction(localButton.action, to: localButton.target)
+    remoteButton.sendAction(remoteButton.action, to: remoteButton.target)
+    allButton.sendAction(allButton.action, to: allButton.target)
+
+    #expect(scopes == [.local, .remote, .all])
+}
+
+@MainActor
+@Test
+func settingsWindowControllerAdvancedHistoryRepairDisablesRemoteScopesWithoutTargets() throws {
+    let controller = SettingsWindowController(
+        settings: AppSettings(),
+        accountPanelState: SettingsAccountPanelState(importStatusText: "", sections: [], actionsEnabled: true)
+    )
+
+    let contentView = try #require(controller.window?.contentView)
+    let localButton = try #require(
+        findView(in: contentView, identifier: "settings.advanced.repair-history.local") as? NSButton
+    )
+    let remoteButton = try #require(
+        findView(in: contentView, identifier: "settings.advanced.repair-history.remote") as? NSButton
+    )
+    let allButton = try #require(
+        findView(in: contentView, identifier: "settings.advanced.repair-history.all") as? NSButton
+    )
+
+    #expect(localButton.isEnabled)
+    #expect(remoteButton.isEnabled == false)
+    #expect(allButton.isEnabled == false)
+}
+
+@MainActor
+@Test
 func settingsWindowControllerInitializesForAccountsPanelState() {
     withExclusiveAppLocalization {
         AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
@@ -1763,6 +1853,8 @@ private final class SettingsWindowControllerSpy: SettingsWindowControlling {
     var onRenameAccount: ((String) -> Void)?
     var onForgetAccount: ((String) -> Void)?
     var onOpenVaultFolder: (() -> Void)?
+    var onSyncCurrentRemoteConfig: (() -> Void)?
+    var onRepairHistoryMetadata: ((HistoryMetadataRepairScope) -> Void)?
     var onWindowClosed: (() -> Void)?
 
     let window: NSWindow? = NSWindow()

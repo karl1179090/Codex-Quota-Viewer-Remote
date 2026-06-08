@@ -607,6 +607,190 @@ func switchOrchestratorSynchronizesRemoteWhenEnabled() async throws {
 
 @MainActor
 @Test
+func switchOrchestratorRetriesOnlyFailedRemoteTargets() async throws {
+        let harness = try makeHarness()
+        try seedCurrentRuntime(in: harness, provider: "legacy")
+
+        let partial = RemoteSwitchPartialFailureError(
+            successes: [
+                RemoteSwitchTargetResult(
+                    sshTarget: "codex-box",
+                    codexHomePath: "~/.codex",
+                    updatedRolloutCount: 1,
+                    warningCount: 0,
+                    terminatedCodexProcessCount: 0
+                ),
+            ],
+            failures: [
+                RemoteSwitchTargetFailure(sshTarget: "prod-box", reason: "connection timed out"),
+            ]
+        )
+        let remote = RemoteSwitchSpy(
+            responses: [
+                .failure(partial),
+                .success(
+                    RemoteSwitchResult(
+                        sshTarget: "prod-box",
+                        codexHomePath: "~/.codex",
+                        updatedRolloutCount: 2,
+                        warningCount: 0
+                    )
+                ),
+            ]
+        )
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: RepairerSpy(),
+            desktop: DesktopControllerSpy(isRunning: false),
+            remoteSwitchClient: remote
+        )
+
+        let result = try await orchestrator.perform(
+            targetProfile: makeSwitchTarget(),
+            remoteSettings: RemoteSwitchSettings(
+                enabled: true,
+                sshTargets: ["codex-box", "prod-box"]
+            ),
+            remoteFailureResolutionProvider: { failure, _ in
+                #expect(failure.successes.map(\.sshTarget) == ["codex-box"])
+                #expect(failure.failures.map(\.sshTarget) == ["prod-box"])
+                return .retry
+            }
+        )
+
+        #expect(remote.performOperations.count == 2)
+        #expect(remote.performOperations[0].settings.trimmedSSHTargets == ["codex-box", "prod-box"])
+        #expect(remote.performOperations[1].settings.trimmedSSHTargets == ["prod-box"])
+        #expect(result.remoteResult?.targets.map(\.sshTarget) == ["codex-box", "prod-box"])
+        #expect(remote.rollbackCalls.isEmpty)
+    }
+
+@MainActor
+@Test
+func switchOrchestratorCanKeepSuccessfulRemoteTargetsAfterFailure() async throws {
+        let harness = try makeHarness()
+        try seedCurrentRuntime(in: harness, provider: "legacy")
+
+        let partial = RemoteSwitchPartialFailureError(
+            successes: [
+                RemoteSwitchTargetResult(
+                    sshTarget: "codex-box",
+                    codexHomePath: "~/.codex",
+                    updatedRolloutCount: 1,
+                    warningCount: 0,
+                    terminatedCodexProcessCount: 0
+                ),
+            ],
+            failures: [
+                RemoteSwitchTargetFailure(sshTarget: "prod-box", reason: "connection refused"),
+            ]
+        )
+        let remote = RemoteSwitchSpy(responses: [.failure(partial)])
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: RepairerSpy(),
+            desktop: DesktopControllerSpy(isRunning: false),
+            remoteSwitchClient: remote
+        )
+
+        let result = try await orchestrator.perform(
+            targetProfile: makeSwitchTarget(),
+            remoteSettings: RemoteSwitchSettings(
+                enabled: true,
+                sshTargets: ["codex-box", "prod-box"]
+            ),
+            remoteFailureResolutionProvider: { _, _ in .keepSuccessful }
+        )
+
+        #expect(result.remoteResult?.targets.map(\.sshTarget) == ["codex-box"])
+        #expect(remote.rollbackCalls.isEmpty)
+        #expect(try Data(contentsOf: harness.codexHomeURL.appendingPathComponent("auth.json")).utf8String()
+            == "{\"auth_mode\":\"chatgpt\"}")
+    }
+
+@MainActor
+@Test
+func switchOrchestratorRollsBackSuccessfulRemoteTargetsWhenUserChoosesRollback() async throws {
+        let harness = try makeHarness()
+        try seedCurrentRuntime(in: harness, provider: "legacy")
+
+        let partial = RemoteSwitchPartialFailureError(
+            successes: [
+                RemoteSwitchTargetResult(
+                    sshTarget: "codex-box",
+                    codexHomePath: "~/.codex",
+                    updatedRolloutCount: 1,
+                    warningCount: 0,
+                    terminatedCodexProcessCount: 0
+                ),
+            ],
+            failures: [
+                RemoteSwitchTargetFailure(sshTarget: "prod-box", reason: "connection refused"),
+            ]
+        )
+        let remote = RemoteSwitchSpy(responses: [.failure(partial)])
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: RepairerSpy(),
+            desktop: DesktopControllerSpy(isRunning: false),
+            remoteSwitchClient: remote
+        )
+
+        await #expect(throws: RemoteSwitchPartialFailureError.self) {
+            _ = try await orchestrator.perform(
+                targetProfile: makeSwitchTarget(),
+                remoteSettings: RemoteSwitchSettings(
+                    enabled: true,
+                    sshTargets: ["codex-box", "prod-box"]
+                ),
+                remoteFailureResolutionProvider: { _, _ in .rollback }
+            )
+        }
+
+        #expect(remote.rollbackCalls.count == 1)
+        #expect(remote.rollbackCalls[0].settings.trimmedSSHTargets == ["codex-box"])
+        #expect(try Data(contentsOf: harness.codexHomeURL.appendingPathComponent("auth.json")).utf8String()
+            == "{\"auth_mode\":\"chatgpt\",\"last_refresh\":\"2026-03-31T00:00:00Z\"}")
+    }
+
+@MainActor
+@Test
+func switchOrchestratorSyncsCurrentRuntimeToRemoteHosts() async throws {
+        let harness = try makeHarness()
+        try seedCurrentRuntime(in: harness, provider: "legacy")
+
+        let remote = RemoteSwitchSpy()
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: RepairerSpy(),
+            desktop: DesktopControllerSpy(isRunning: false),
+            remoteSwitchClient: remote
+        )
+
+        let result = try await orchestrator.syncCurrentRuntimeToRemote(
+            remoteSettings: RemoteSwitchSettings(
+                enabled: false,
+                sshTargets: ["codex-box"],
+                codexHomePath: "/srv/codex"
+            )
+        )
+
+        #expect(result.sshTarget == "codex-box")
+        #expect(remote.performOperations.count == 1)
+        #expect(remote.performOperations[0].settings.shouldSyncRemote)
+        #expect(remote.performOperations[0].settings.effectiveCodexHomePath == "/srv/codex")
+        #expect(remote.performOperations[0].restorePointID?.hasPrefix("remote-sync-") == true)
+        #expect(remote.performOperations[0].targetProviderID == "legacy")
+        #expect(try remote.performOperations[0].authData.utf8String()
+            == "{\"auth_mode\":\"chatgpt\",\"last_refresh\":\"2026-03-31T00:00:00Z\"}")
+        let config = try remote.performOperations[0].targetConfigData.utf8String()
+        #expect(config.contains("personality = \"pragmatic\""))
+        #expect(config.contains("model_provider = \"legacy\""))
+        #expect(config.contains("[model_providers.legacy]"))
+    }
+
+@MainActor
+@Test
 func switchOrchestratorRollsBackLocalWhenRemoteSwitchFails() async throws {
         let harness = try makeHarness()
         try seedCurrentRuntime(in: harness, provider: "legacy")
@@ -1085,13 +1269,26 @@ private final class RemoteSwitchSpy: RemoteSwitching, @unchecked Sendable {
     private(set) var performOperations: [RemoteSwitchOperation] = []
     private(set) var rollbackCalls: [RollbackCall] = []
     private let error: Error?
+    private var responses: [Result<RemoteSwitchResult, Error>]
 
-    init(error: Error? = nil) {
+    init(
+        error: Error? = nil,
+        responses: [Result<RemoteSwitchResult, Error>] = []
+    ) {
         self.error = error
+        self.responses = responses
     }
 
     func perform(_ operation: RemoteSwitchOperation) async throws -> RemoteSwitchResult {
         performOperations.append(operation)
+        if !responses.isEmpty {
+            switch responses.removeFirst() {
+            case .success(let result):
+                return result
+            case .failure(let error):
+                throw error
+            }
+        }
         if let error {
             throw error
         }
@@ -1105,6 +1302,30 @@ private final class RemoteSwitchSpy: RemoteSwitching, @unchecked Sendable {
 
     func rollback(settings: RemoteSwitchSettings, restorePointID: String) async throws {
         rollbackCalls.append(RollbackCall(settings: settings, restorePointID: restorePointID))
+    }
+
+    func repairHistoryMetadata(settings: RemoteSwitchSettings) async throws -> RemoteHistoryRepairResult {
+        if let error {
+            throw error
+        }
+        return RemoteHistoryRepairResult(
+            targets: settings.trimmedSSHTargets.map {
+                RemoteHistoryRepairTargetResult(
+                    sshTarget: $0,
+                    codexHomePath: settings.effectiveCodexHomePath,
+                    summary: HistoryMetadataRepairSummary(
+                        dbThreadsSeen: 1,
+                        dbThreadsUpdated: 1,
+                        rolloutFilesSeen: 1,
+                        rolloutFilesUpdated: 1,
+                        indexRowsSeen: 1,
+                        indexRowsUpdated: 1,
+                        malformedJSONLines: 0,
+                        backupPath: nil
+                    )
+                )
+            }
+        )
     }
 }
 

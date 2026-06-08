@@ -4,6 +4,7 @@ import {
   copyFile,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
@@ -16,6 +17,11 @@ import type {
   BatchSessionActionResponse,
   RestoreRequest,
   OfficialRepairResponse,
+  RemoteSessionImportRequest,
+  RemoteSessionImportResponse,
+  RemoteSessionPreviewResponse,
+  SessionSyncRequest,
+  SessionSyncResponse,
   SessionRecord,
   SessionDetail,
   SessionFilters,
@@ -23,6 +29,7 @@ import type {
 } from "../../shared/contracts";
 import { AppError } from "../lib/errors";
 import {
+  buildRemoteSessionRoots,
   buildSessionRoots,
   ensureInsidePath,
   ensureInsideRealpath,
@@ -47,29 +54,81 @@ import {
 } from "./jsonl-session-parser";
 import { SessionRepository } from "./session-repository";
 import type { CatalogSessionEntry } from "./session-repository-model";
+import {
+  LOCAL_HOST_ID,
+  buildDirectRemoteSessionRecordId,
+  buildSessionRecordId,
+  isSafeRemoteHostId,
+  localSessionHost,
+  normalizeRemoteHostTarget,
+  readThreadId,
+  type SessionHost,
+} from "./session-hosts";
+import {
+  previewRemoteSessionFiles,
+  pullRemoteSessionFiles,
+  readRemoteSessionFile,
+  writeRemoteSessionFile,
+  type RemoteSessionFileReader,
+  type RemoteSessionFileWriter,
+  type RemoteSessionPreviewer,
+  type RemoteSessionPuller,
+} from "./remote-session-importer";
 
 type ManagerConfig = {
   codexHome: string;
   managerHome: string;
+  remoteSessionPuller?: RemoteSessionPuller;
+  remoteSessionPreviewer?: RemoteSessionPreviewer;
+  remoteSessionFileReader?: RemoteSessionFileReader;
+  remoteSessionFileWriter?: RemoteSessionFileWriter;
 };
 
 type SessionSourceEntry = Awaited<ReturnType<typeof collectSessions>>[number];
+type ManagedSessionRoots = {
+  sessionsRoot: string;
+  archiveRoot: string;
+  snapshotRoot: string;
+};
+type SessionHostContext = SessionHost & {
+  roots: ManagedSessionRoots;
+};
+type RemoteHostManifest = {
+  hostId: string;
+  hostLabel: string;
+  codexHomePath: string;
+  lastImportedAt: string;
+};
+type DirectRemoteSessionEntry = CatalogSessionEntry & {
+  sshTarget: string;
+  codexHomePath: string;
+  relativePath: string;
+};
 
 export type SessionManager = ReturnType<typeof createSessionManager>;
 
 export function createSessionManager(config: ManagerConfig) {
   const roots = buildSessionRoots(config.codexHome, config.managerHome);
+  const remoteSessionPuller = config.remoteSessionPuller ?? pullRemoteSessionFiles;
+  const remoteSessionPreviewer =
+    config.remoteSessionPreviewer ?? previewRemoteSessionFiles;
+  const remoteSessionFileReader =
+    config.remoteSessionFileReader ?? readRemoteSessionFile;
+  const remoteSessionFileWriter =
+    config.remoteSessionFileWriter ?? writeRemoteSessionFile;
   mkdirSync(config.managerHome, { recursive: true });
   mkdirSync(roots.archiveRoot, { recursive: true });
   mkdirSync(roots.snapshotRoot, { recursive: true });
+  mkdirSync(roots.remoteRoot, { recursive: true });
   const repository = new SessionRepository(roots.databasePath);
   const officialThreads = new CodexOfficialThreadBridge(config.codexHome);
+  const directRemoteSessions = new Map<string, DirectRemoteSessionEntry>();
   let mutationQueue = Promise.resolve();
 
   async function rescan() {
     return enqueueMutation(async () => {
       await scanAndIndexSessions();
-      return repository.listSessions();
+      return listSessions();
     });
   }
 
@@ -79,20 +138,21 @@ export function createSessionManager(config: ManagerConfig) {
 
       if (!targetIds) {
         const sessions = await scanAndIndexSessions();
-        const stats = await officialThreads.repairSessions(sessions, {
+        const stats = await officialThreads.repairSessions(localOfficialRecords(sessions), {
           cleanupBroken: true,
         });
 
         return {
-          sessions: repository.listSessions(),
+          sessions: await listSessions(),
           stats,
         };
       }
 
       const refreshed = await refreshIndexedSessions(targetIds);
+      const repairableRecords = localOfficialRecords(refreshed.records);
       const stats =
-        refreshed.records.length > 0
-          ? await officialThreads.repairSessions(refreshed.records, {
+        repairableRecords.length > 0
+          ? await officialThreads.repairSessions(repairableRecords, {
               sessionIds: targetIds,
             })
           : createEmptyRepairStats();
@@ -110,22 +170,187 @@ export function createSessionManager(config: ManagerConfig) {
       }
 
       return {
-        sessions: repository.listSessions(),
+        sessions: await listSessions(),
         stats,
+      };
+    });
+  }
+
+  async function importRemoteSessions(
+    request: RemoteSessionImportRequest,
+  ): Promise<RemoteSessionImportResponse> {
+    return enqueueMutation(async () => {
+      await ensureRoots();
+      const host = normalizeRemoteHostTarget(request.sshTarget);
+      const codexHomePath = normalizeCodexHomePath(request.codexHomePath);
+      const remoteRoots = buildRemoteSessionRoots(roots.remoteRoot, host.hostId);
+
+      await mkdir(remoteRoots.hostRoot, { recursive: true });
+      await mkdir(remoteRoots.sessionsRoot, { recursive: true });
+      await mkdir(remoteRoots.archiveRoot, { recursive: true });
+      await mkdir(remoteRoots.snapshotRoot, { recursive: true });
+
+      let pullResult;
+      try {
+        pullResult = await remoteSessionPuller({
+          sshTarget: host.hostLabel,
+          codexHomePath,
+          destinationRoot: remoteRoots.sessionsRoot,
+        });
+      } catch (error) {
+        if (error instanceof AppError) {
+          throw error;
+        }
+
+        throw new AppError(
+          502,
+          "remote_session_import_failed",
+          error instanceof Error ? error.message : "Remote session import failed.",
+          { host: host.hostLabel },
+        );
+      }
+
+      await writeRemoteHostManifest({
+        hostId: host.hostId,
+        hostLabel: host.hostLabel,
+        codexHomePath,
+        lastImportedAt: new Date().toISOString(),
+      });
+
+      const sessions = await scanAndIndexSessions();
+      return {
+        hostId: host.hostId,
+        hostLabel: host.hostLabel,
+        importedCount: sessions.filter((session) => session.hostId === host.hostId).length,
+        copiedFileCount: pullResult.copiedFileCount,
+        sessions: await listSessions(),
+      };
+    });
+  }
+
+  async function previewRemoteSessions(
+    request: RemoteSessionImportRequest,
+  ): Promise<RemoteSessionPreviewResponse> {
+    return enqueueMutation(async () => {
+      const host = normalizeRemoteHostTarget(request.sshTarget);
+      const codexHomePath = normalizeCodexHomePath(request.codexHomePath);
+      const entries = await remoteSessionPreviewer({
+        sshTarget: host.hostLabel,
+        codexHomePath,
+      });
+
+      for (const staleId of [...directRemoteSessions.keys()]) {
+        const staleEntry = directRemoteSessions.get(staleId);
+        if (staleEntry?.hostId === host.hostId) {
+          directRemoteSessions.delete(staleId);
+        }
+      }
+
+      for (const entry of entries) {
+        const threadId = entry.parsed.summary.id;
+        const recordId = buildDirectRemoteSessionRecordId(host, threadId);
+
+        directRemoteSessions.set(recordId, {
+          recordId,
+          threadId,
+          hostId: host.hostId,
+          hostLabel: host.hostLabel,
+          isRemote: true,
+          summary: entry.parsed.summary,
+          timeline: entry.parsed.timeline,
+          activePath: `ssh://${host.hostLabel}/${entry.relativePath}`,
+          archivePath: null,
+          snapshotPath: null,
+          originalRelativePath: entry.relativePath,
+          status: "active",
+          sshTarget: host.hostLabel,
+          codexHomePath,
+          relativePath: entry.relativePath,
+        });
+      }
+
+      return {
+        hostId: host.hostId,
+        hostLabel: host.hostLabel,
+        previewedCount: entries.length,
+        sessions: await listSessions(),
+      };
+    });
+  }
+
+  async function syncSession(
+    sessionId: string,
+    request: SessionSyncRequest,
+  ): Promise<SessionSyncResponse> {
+    return enqueueMutation(async () => {
+      await ensureRoots();
+      const source = await readSessionFileForSync(sessionId);
+      const target = normalizeSyncTarget(request.target);
+
+      if (target.kind === "local") {
+        const targetPath = await assertManagedPath(
+          "active",
+          roots.sessionsRoot,
+          path.join(roots.sessionsRoot, source.relativePath),
+          { allowMissingTail: true },
+        );
+        await mkdir(path.dirname(targetPath), { recursive: true });
+        await writeFile(targetPath, source.content);
+
+        const sessions = await scanAndIndexSessions();
+        return {
+          sourceSessionId: sessionId,
+          targetHostId: LOCAL_HOST_ID,
+          targetHostLabel: localSessionHost().hostLabel,
+          relativePath: source.relativePath,
+          sessions: mergeDirectRemoteRecords(sessions),
+        };
+      }
+
+      await remoteSessionFileWriter({
+        sshTarget: target.host.hostLabel,
+        codexHomePath: target.codexHomePath,
+        relativePath: source.relativePath,
+        content: source.content,
+      });
+
+      return {
+        sourceSessionId: sessionId,
+        targetHostId: target.host.hostId,
+        targetHostLabel: target.host.hostLabel,
+        relativePath: source.relativePath,
+        sessions: await listSessions(),
       };
     });
   }
 
   async function scanAndIndexSessions() {
     await ensureRoots();
-    const [activeEntries, archivedEntries, snapshotEntries] = await Promise.all([
-      collectSessions(roots.sessionsRoot),
-      collectSessions(roots.archiveRoot),
-      collectSessions(roots.snapshotRoot),
-    ]);
+    const hostContexts = await listHostContexts();
     const latestAuditBySessionId = new Map(
       repository.listLatestAuditEntries().map((entry) => [entry.sessionId, entry]),
     );
+
+    const catalogEntries = (
+      await Promise.all(
+        hostContexts.map((hostContext) =>
+          scanHostSessions(hostContext, latestAuditBySessionId),
+        ),
+      )
+    ).flat();
+
+    return repository.replaceCatalog(catalogEntries);
+  }
+
+  async function scanHostSessions(
+    hostContext: SessionHostContext,
+    latestAuditBySessionId: Map<string, AuditEntry>,
+  ) {
+    const [activeEntries, archivedEntries, snapshotEntries] = await Promise.all([
+      collectSessions(hostContext.roots.sessionsRoot),
+      collectSessions(hostContext.roots.archiveRoot),
+      collectSessions(hostContext.roots.snapshotRoot),
+    ]);
     const activeById = new Map<string, SessionSourceEntry>();
     const archivedById = new Map<string, SessionSourceEntry>();
     const archivedRelativePaths = new Map<string, string>();
@@ -137,6 +362,7 @@ export function createSessionManager(config: ManagerConfig) {
 
     for (const entry of archivedEntries) {
       const { entry: normalizedEntry, originalRelativePath } = await canonicalizeArchivedEntry(
+        hostContext.roots,
         entry,
         buildFallbackRelativePath(entry.parsed.summary.startedAt, entry.parsed.summary.id),
       );
@@ -161,25 +387,31 @@ export function createSessionManager(config: ManagerConfig) {
       const archivedEntry = archivedById.get(sessionId);
       const snapshotEntry = snapshotById.get(sessionId);
       const primaryEntry = activeEntry ?? archivedEntry ?? snapshotEntry;
+      const recordId = buildSessionRecordId(hostContext, sessionId);
 
       if (!primaryEntry) {
         continue;
       }
 
       const summary = primaryEntry.parsed.summary;
-      const latestAudit = latestAuditBySessionId.get(sessionId);
+      const latestAudit = latestAuditBySessionId.get(recordId);
       const activePath = activeEntry?.filePath ?? null;
       const archivePath = archivedEntry?.filePath ?? null;
       const snapshotPath = snapshotEntry?.filePath ?? null;
       const originalRelativePath =
         activeEntry
-          ? path.relative(roots.sessionsRoot, activeEntry.filePath)
+          ? path.relative(hostContext.roots.sessionsRoot, activeEntry.filePath)
           : archivedRelativePaths.get(sessionId) ??
-            readRelativePathFromAudit(latestAudit?.sourcePath, roots) ??
-            readRelativePathFromAudit(latestAudit?.targetPath, roots) ??
+            readRelativePathFromAudit(latestAudit?.sourcePath, hostContext.roots) ??
+            readRelativePathFromAudit(latestAudit?.targetPath, hostContext.roots) ??
             buildFallbackRelativePath(summary.startedAt, summary.id);
 
       catalogEntries.push({
+        recordId,
+        threadId: summary.id,
+        hostId: hostContext.hostId,
+        hostLabel: hostContext.hostLabel,
+        isRemote: hostContext.isRemote,
         summary,
         timeline: primaryEntry.parsed.timeline,
         activePath,
@@ -190,7 +422,7 @@ export function createSessionManager(config: ManagerConfig) {
       });
     }
 
-    return repository.replaceCatalog(catalogEntries);
+    return catalogEntries;
   }
 
   async function refreshIndexedSessions(sessionIds: string[]) {
@@ -232,30 +464,33 @@ export function createSessionManager(config: ManagerConfig) {
     existing: SessionRecord,
     latestAudit?: AuditEntry,
   ): Promise<CatalogSessionEntry | null> {
+    const recordRoots = managedRootsForRecord(existing);
+    const threadId = readThreadId(existing);
     const fallbackRelativePath =
       existing.originalRelativePath ??
-      readRelativePathFromAudit(latestAudit?.sourcePath, roots) ??
-      readRelativePathFromAudit(latestAudit?.targetPath, roots) ??
-      buildFallbackRelativePath(existing.startedAt, existing.id);
-    const activeEntry = await readCatalogSourceEntry(existing.id, roots.sessionsRoot, [
+      readRelativePathFromAudit(latestAudit?.sourcePath, recordRoots) ??
+      readRelativePathFromAudit(latestAudit?.targetPath, recordRoots) ??
+      buildFallbackRelativePath(existing.startedAt, threadId);
+    const activeEntry = await readCatalogSourceEntry(threadId, recordRoots.sessionsRoot, [
       existing.activePath,
-      path.join(roots.sessionsRoot, fallbackRelativePath),
+      path.join(recordRoots.sessionsRoot, fallbackRelativePath),
       latestAudit?.sourcePath,
       latestAudit?.targetPath,
     ]);
     const archived = await readArchivedCatalogSourceEntry(
-      existing.id,
+      recordRoots,
+      threadId,
       fallbackRelativePath,
       [
         existing.archivePath,
-        sessionArchivePath(roots.archiveRoot, fallbackRelativePath),
+        sessionArchivePath(recordRoots.archiveRoot, fallbackRelativePath),
         latestAudit?.sourcePath,
         latestAudit?.targetPath,
       ],
     );
-    const snapshotEntry = await readCatalogSourceEntry(existing.id, roots.snapshotRoot, [
+    const snapshotEntry = await readCatalogSourceEntry(threadId, recordRoots.snapshotRoot, [
       existing.snapshotPath,
-      sessionSnapshotPath(roots.snapshotRoot, existing.id),
+      sessionSnapshotPath(recordRoots.snapshotRoot, existing.id),
     ]);
     const primaryEntry = activeEntry ?? archived.entry ?? snapshotEntry;
 
@@ -264,6 +499,11 @@ export function createSessionManager(config: ManagerConfig) {
     }
 
     return {
+      recordId: existing.id,
+      threadId,
+      hostId: existing.hostId,
+      hostLabel: existing.hostLabel,
+      isRemote: existing.isRemote,
       summary: primaryEntry.parsed.summary,
       timeline: primaryEntry.parsed.timeline,
       activePath: activeEntry?.filePath ?? null,
@@ -271,10 +511,10 @@ export function createSessionManager(config: ManagerConfig) {
       snapshotPath: snapshotEntry?.filePath ?? null,
       originalRelativePath:
         activeEntry
-          ? path.relative(roots.sessionsRoot, activeEntry.filePath)
+          ? path.relative(recordRoots.sessionsRoot, activeEntry.filePath)
           : archived.originalRelativePath ??
-            readRelativePathFromAudit(latestAudit?.sourcePath, roots) ??
-            readRelativePathFromAudit(latestAudit?.targetPath, roots) ??
+            readRelativePathFromAudit(latestAudit?.sourcePath, recordRoots) ??
+            readRelativePathFromAudit(latestAudit?.targetPath, recordRoots) ??
             buildFallbackRelativePath(
               primaryEntry.parsed.summary.startedAt,
               primaryEntry.parsed.summary.id,
@@ -319,6 +559,7 @@ export function createSessionManager(config: ManagerConfig) {
   }
 
   async function readArchivedCatalogSourceEntry(
+    recordRoots: ManagedSessionRoots,
     sessionId: string,
     fallbackRelativePath: string,
     candidates: Array<string | null | undefined>,
@@ -327,7 +568,7 @@ export function createSessionManager(config: ManagerConfig) {
     originalRelativePath: string | null;
   }> {
     for (const candidate of uniquePaths(candidates)) {
-      const filePath = await resolveManagedExistingPath(roots.archiveRoot, candidate);
+      const filePath = await resolveManagedExistingPath(recordRoots.archiveRoot, candidate);
 
       if (!filePath) {
         continue;
@@ -340,6 +581,7 @@ export function createSessionManager(config: ManagerConfig) {
           continue;
         }
         const normalized = await canonicalizeArchivedEntry(
+          recordRoots,
           { filePath, parsed },
           fallbackRelativePath,
         );
@@ -360,13 +602,14 @@ export function createSessionManager(config: ManagerConfig) {
   }
 
   async function canonicalizeArchivedEntry(
+    recordRoots: ManagedSessionRoots,
     entry: SessionSourceEntry,
     fallbackRelativePath: string,
   ): Promise<{
     entry: SessionSourceEntry;
     originalRelativePath: string;
   }> {
-    const currentRelativePath = path.relative(roots.archiveRoot, entry.filePath);
+    const currentRelativePath = path.relative(recordRoots.archiveRoot, entry.filePath);
     const originalRelativePath = looksCanonicalSessionRelativePath(
       currentRelativePath,
       entry.parsed.summary.id,
@@ -374,8 +617,8 @@ export function createSessionManager(config: ManagerConfig) {
       ? currentRelativePath
       : fallbackRelativePath;
     const archivePath = await ensureInsideRealpath(
-      roots.archiveRoot,
-      sessionArchivePath(roots.archiveRoot, originalRelativePath),
+      recordRoots.archiveRoot,
+      sessionArchivePath(recordRoots.archiveRoot, originalRelativePath),
       { allowMissingTail: true },
     );
 
@@ -407,10 +650,26 @@ export function createSessionManager(config: ManagerConfig) {
   }
 
   async function listSessions(filters: SessionFilters = {}) {
-    return repository.listSessions(filters);
+    return mergeDirectRemoteRecords(repository.listSessions(filters), filters);
   }
 
   async function getSessionDetail(id: string): Promise<SessionDetail> {
+    const directEntry = directRemoteSessions.get(id);
+    if (directEntry) {
+      const record = directEntryToRecord(directEntry);
+      return {
+        record,
+        auditEntries: [],
+        timeline: directEntry.timeline.slice(0, DEFAULT_TIMELINE_PAGE_SIZE),
+        timelineTotal: directEntry.timeline.length,
+        timelineNextOffset:
+          directEntry.timeline.length > DEFAULT_TIMELINE_PAGE_SIZE
+            ? DEFAULT_TIMELINE_PAGE_SIZE
+            : null,
+        officialState: await officialThreads.inspectSession(record),
+      };
+    }
+
     requireSession(id);
     const detail = repository.listDetails(id);
     const timelinePage = repository.listTimelinePage(id, {
@@ -434,6 +693,18 @@ export function createSessionManager(config: ManagerConfig) {
       limit?: number;
     } = {},
   ): Promise<SessionTimelinePage> {
+    const directEntry = directRemoteSessions.get(id);
+    if (directEntry) {
+      const offset = Math.max(options.offset ?? 0, 0);
+      const limit = clampTimelineLimit(options.limit);
+      return {
+        items: directEntry.timeline.slice(offset, offset + limit),
+        total: directEntry.timeline.length,
+        nextOffset:
+          offset + limit < directEntry.timeline.length ? offset + limit : null,
+      };
+    }
+
     requireSession(id);
     return repository.listTimelinePage(id, {
       offset: options.offset,
@@ -448,6 +719,7 @@ export function createSessionManager(config: ManagerConfig) {
   async function archiveSessionUnsafe(id: string): Promise<SessionRecord> {
     await ensureRoots();
     const record = requireSession(id);
+    const recordRoots = managedRootsForRecord(record);
 
     if (!record.activePath) {
       if (record.archivePath) {
@@ -461,11 +733,11 @@ export function createSessionManager(config: ManagerConfig) {
       );
     }
 
-    const sourcePath = await assertManagedPath("active", roots.sessionsRoot, record.activePath);
+    const sourcePath = await assertManagedPath("active", recordRoots.sessionsRoot, record.activePath);
     const targetPath = await assertManagedPath(
       "archive",
-      roots.archiveRoot,
-      sessionArchivePath(roots.archiveRoot, resolveSessionRelativePath(record)),
+      recordRoots.archiveRoot,
+      sessionArchivePath(recordRoots.archiveRoot, resolveSessionRelativePath(record)),
       { allowMissingTail: true },
     );
     await mkdir(path.dirname(targetPath), { recursive: true });
@@ -476,7 +748,9 @@ export function createSessionManager(config: ManagerConfig) {
       archivePath: targetPath,
       status: "archived",
     });
-    await officialThreads.repairSessions([next]);
+    if (!next.isRemote) {
+      await officialThreads.repairSessions([next]);
+    }
 
     repository.insertAudit("archive", id, sourcePath, targetPath);
     return next;
@@ -489,19 +763,20 @@ export function createSessionManager(config: ManagerConfig) {
   async function deleteSessionUnsafe(id: string): Promise<SessionRecord> {
     await ensureRoots();
     const record = requireSession(id);
+    const recordRoots = managedRootsForRecord(record);
     const sourcePath = await assertManagedCurrentPath(record);
     const archivePath = await assertManagedPath(
       "archive",
-      roots.archiveRoot,
-      sessionArchivePath(roots.archiveRoot, resolveSessionRelativePath(record)),
+      recordRoots.archiveRoot,
+      sessionArchivePath(recordRoots.archiveRoot, resolveSessionRelativePath(record)),
       { allowMissingTail: true },
     );
     const snapshotPath = record.snapshotPath
-      ? await assertManagedPath("snapshot", roots.snapshotRoot, record.snapshotPath)
+      ? await assertManagedPath("snapshot", recordRoots.snapshotRoot, record.snapshotPath)
       : await assertManagedPath(
           "snapshot",
-          roots.snapshotRoot,
-          sessionSnapshotPath(roots.snapshotRoot, id),
+          recordRoots.snapshotRoot,
+          sessionSnapshotPath(recordRoots.snapshotRoot, id),
           { allowMissingTail: true },
         );
 
@@ -519,7 +794,9 @@ export function createSessionManager(config: ManagerConfig) {
       snapshotPath,
       status: "deleted_pending_purge",
     });
-    await officialThreads.repairSessions([next]);
+    if (!next.isRemote) {
+      await officialThreads.repairSessions([next]);
+    }
 
     repository.insertAudit("delete", id, sourcePath, archivePath, {
       snapshotPath,
@@ -534,20 +811,21 @@ export function createSessionManager(config: ManagerConfig) {
   async function restoreSessionUnsafe(request: RestoreRequest) {
     await ensureRoots();
     const record = requireSession(request.sessionId);
+    const recordRoots = managedRootsForRecord(record);
     const restoreMode = normalizeRestoreMode(request.restoreMode);
     const isAlreadyActive = Boolean(record.activePath);
     const sourcePath = isAlreadyActive
-      ? await assertManagedPath("active", roots.sessionsRoot, record.activePath!)
+      ? await assertManagedPath("active", recordRoots.sessionsRoot, record.activePath!)
       : await assertManagedRestoreSource(record);
     const restorePath = isAlreadyActive
-      ? await assertManagedPath("active", roots.sessionsRoot, record.activePath!)
+      ? await assertManagedPath("active", recordRoots.sessionsRoot, record.activePath!)
       : await assertManagedPath(
           "active",
-          roots.sessionsRoot,
+          recordRoots.sessionsRoot,
           path.join(
-            roots.sessionsRoot,
+            recordRoots.sessionsRoot,
             record.originalRelativePath ??
-              buildFallbackRelativePath(record.startedAt, record.id),
+              buildFallbackRelativePath(record.startedAt, readThreadId(record)),
           ),
           { allowMissingTail: true },
         );
@@ -592,10 +870,12 @@ export function createSessionManager(config: ManagerConfig) {
           cwd: restoreMode === "rebind_cwd" ? request.targetCwd! : record.cwd,
           status: "active",
         });
-    await officialThreads.repairSessions([next]);
+    if (!next.isRemote) {
+      await officialThreads.repairSessions([next]);
+    }
 
     const resumeCommand = buildResumeCommand(
-      record.id,
+      readThreadId(record),
       restoreMode === "resume_only" ? request.targetCwd : undefined,
     );
     let launched = false;
@@ -620,6 +900,7 @@ export function createSessionManager(config: ManagerConfig) {
   async function purgeSessionUnsafe(id: string): Promise<{ purgedId: string }> {
     await ensureRoots();
     const record = requireSession(id);
+    const recordRoots = managedRootsForRecord(record);
 
     if (record.activePath) {
       throw new AppError(
@@ -630,13 +911,13 @@ export function createSessionManager(config: ManagerConfig) {
     }
 
     if (record.archivePath) {
-      await rm(await assertManagedPath("archive", roots.archiveRoot, record.archivePath), {
+      await rm(await assertManagedPath("archive", recordRoots.archiveRoot, record.archivePath), {
         force: true,
       });
     }
 
     if (record.snapshotPath) {
-      await rm(await assertManagedPath("snapshot", roots.snapshotRoot, record.snapshotPath), {
+      await rm(await assertManagedPath("snapshot", recordRoots.snapshotRoot, record.snapshotPath), {
         force: true,
       });
     }
@@ -644,7 +925,9 @@ export function createSessionManager(config: ManagerConfig) {
     repository.insertAudit("purge", id, record.archivePath, null, {
       snapshotPath: record.snapshotPath,
     });
-    await officialThreads.removeSession(id);
+    if (!record.isRemote) {
+      await officialThreads.removeSession(readThreadId(record));
+    }
     repository.deleteSession(id);
     return { purgedId: id };
   }
@@ -694,8 +977,209 @@ export function createSessionManager(config: ManagerConfig) {
     });
   }
 
+  async function listHostContexts(): Promise<SessionHostContext[]> {
+    const localHost = localSessionHost();
+    const remoteHosts = await readRemoteHostManifests();
+
+    return [
+      {
+        ...localHost,
+        roots,
+      },
+      ...remoteHosts.map((remoteHost) => ({
+        hostId: remoteHost.hostId,
+        hostLabel: remoteHost.hostLabel,
+        isRemote: true,
+        roots: buildRemoteSessionRoots(roots.remoteRoot, remoteHost.hostId),
+      })),
+    ];
+  }
+
+  async function readRemoteHostManifests(): Promise<RemoteHostManifest[]> {
+    await mkdir(roots.remoteRoot, { recursive: true });
+
+    let entries;
+    try {
+      entries = await readdir(roots.remoteRoot, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+
+    const manifests: RemoteHostManifest[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !isSafeRemoteHostId(entry.name)) {
+        continue;
+      }
+
+      const remoteRoots = buildRemoteSessionRoots(roots.remoteRoot, entry.name);
+      try {
+        const manifest = JSON.parse(
+          await readFile(remoteRoots.manifestPath, "utf8"),
+        ) as Partial<RemoteHostManifest>;
+
+        if (
+          manifest.hostId === entry.name &&
+          typeof manifest.hostLabel === "string" &&
+          manifest.hostLabel.length > 0
+        ) {
+          manifests.push({
+            hostId: manifest.hostId,
+            hostLabel: manifest.hostLabel,
+            codexHomePath:
+              typeof manifest.codexHomePath === "string" && manifest.codexHomePath.length > 0
+                ? manifest.codexHomePath
+                : "~/.codex",
+            lastImportedAt:
+              typeof manifest.lastImportedAt === "string" && manifest.lastImportedAt.length > 0
+                ? manifest.lastImportedAt
+                : new Date(0).toISOString(),
+          });
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return manifests.sort((left, right) => left.hostLabel.localeCompare(right.hostLabel));
+  }
+
+  async function writeRemoteHostManifest(manifest: RemoteHostManifest) {
+    const remoteRoots = buildRemoteSessionRoots(roots.remoteRoot, manifest.hostId);
+    await mkdir(remoteRoots.hostRoot, { recursive: true });
+    await writeFile(
+      remoteRoots.manifestPath,
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      "utf8",
+    );
+  }
+
+  function managedRootsForRecord(record: Pick<SessionRecord, "hostId" | "isRemote">): ManagedSessionRoots {
+    if (!record.isRemote) {
+      return roots;
+    }
+
+    if (!isSafeRemoteHostId(record.hostId) || record.hostId === LOCAL_HOST_ID) {
+      throw new AppError(
+        400,
+        "invalid_remote_host",
+        "Remote session host metadata is invalid.",
+        { host: record.hostId },
+      );
+    }
+
+    return buildRemoteSessionRoots(roots.remoteRoot, record.hostId);
+  }
+
+  function localOfficialRecords(records: SessionRecord[]) {
+    return records.filter((record) => !record.isRemote);
+  }
+
+  function normalizeCodexHomePath(value: unknown) {
+    return typeof value === "string" && value.trim().length > 0
+      ? value.trim()
+      : "~/.codex";
+  }
+
+  async function readSessionFileForSync(sessionId: string) {
+    const directEntry = directRemoteSessions.get(sessionId);
+    if (directEntry) {
+      return {
+        relativePath: directEntry.relativePath,
+        content: await remoteSessionFileReader({
+          sshTarget: directEntry.sshTarget,
+          codexHomePath: directEntry.codexHomePath,
+          relativePath: directEntry.relativePath,
+        }),
+      };
+    }
+
+    const record = requireSession(sessionId);
+    const sourcePath = record.activePath ?? record.archivePath ?? record.snapshotPath;
+
+    if (!sourcePath) {
+      throw new AppError(
+        409,
+        "session_has_no_file_to_delete",
+        "Session has no file available to sync.",
+      );
+    }
+
+    const recordRoots = managedRootsForRecord(record);
+    const label = record.activePath
+      ? "active"
+      : record.archivePath
+        ? "archive"
+        : "snapshot";
+    const managedSourcePath = await assertManagedPath(
+      label,
+      label === "active"
+        ? recordRoots.sessionsRoot
+        : label === "archive"
+          ? recordRoots.archiveRoot
+          : recordRoots.snapshotRoot,
+      sourcePath,
+    );
+
+    return {
+      relativePath:
+        record.originalRelativePath ??
+        buildFallbackRelativePath(record.startedAt, readThreadId(record)),
+      content: await readFile(managedSourcePath),
+    };
+  }
+
+  function normalizeSyncTarget(target: SessionSyncRequest["target"] | undefined) {
+    if (!target) {
+      throw new AppError(
+        400,
+        "remote_sync_target_required",
+        "Session sync target is required.",
+      );
+    }
+
+    if (target.kind === "local") {
+      return { kind: "local" as const };
+    }
+
+    if (target.kind === "remote") {
+      return {
+        kind: "remote" as const,
+        host: normalizeRemoteHostTarget(target.sshTarget),
+        codexHomePath: normalizeCodexHomePath(target.codexHomePath),
+      };
+    }
+
+    throw new AppError(
+      400,
+      "remote_sync_target_required",
+      "Session sync target is required.",
+    );
+  }
+
+  function mergeDirectRemoteRecords(
+    records: SessionRecord[],
+    filters: SessionFilters = {},
+  ) {
+    const directRecords = [...directRemoteSessions.values()]
+      .map(directEntryToRecord)
+      .filter((record) => sessionMatchesFilters(record, filters));
+    const existingIds = new Set(records.map((record) => record.id));
+
+    return [
+      ...records,
+      ...directRecords.filter((record) => !existingIds.has(record.id)),
+    ].sort((left, right) => {
+      const timeDelta = Date.parse(right.startedAt) - Date.parse(left.startedAt);
+      return timeDelta === 0 ? left.id.localeCompare(right.id) : timeDelta;
+    });
+  }
+
   return {
     rescan,
+    importRemoteSessions,
+    previewRemoteSessions,
+    syncSession,
     listSessions,
     getSessionDetail,
     getSessionTimelinePage,
@@ -723,6 +1207,7 @@ export function createSessionManager(config: ManagerConfig) {
     await mkdir(roots.sessionsRoot, { recursive: true });
     await mkdir(roots.archiveRoot, { recursive: true });
     await mkdir(roots.snapshotRoot, { recursive: true });
+    await mkdir(roots.remoteRoot, { recursive: true });
     await mkdir(config.managerHome, { recursive: true });
   }
 
@@ -811,12 +1296,14 @@ export function createSessionManager(config: ManagerConfig) {
   }
 
   async function assertManagedCurrentPath(record: SessionRecord) {
+    const recordRoots = managedRootsForRecord(record);
+
     if (record.activePath) {
-      return assertManagedPath("active", roots.sessionsRoot, record.activePath);
+      return assertManagedPath("active", recordRoots.sessionsRoot, record.activePath);
     }
 
     if (record.archivePath) {
-      return assertManagedPath("archive", roots.archiveRoot, record.archivePath);
+      return assertManagedPath("archive", recordRoots.archiveRoot, record.archivePath);
     }
 
     throw new AppError(
@@ -827,12 +1314,14 @@ export function createSessionManager(config: ManagerConfig) {
   }
 
   async function assertManagedRestoreSource(record: SessionRecord) {
+    const recordRoots = managedRootsForRecord(record);
+
     if (record.archivePath) {
-      return assertManagedPath("archive", roots.archiveRoot, record.archivePath);
+      return assertManagedPath("archive", recordRoots.archiveRoot, record.archivePath);
     }
 
     if (record.snapshotPath) {
-      return assertManagedPath("snapshot", roots.snapshotRoot, record.snapshotPath);
+      return assertManagedPath("snapshot", recordRoots.snapshotRoot, record.snapshotPath);
     }
 
     throw new AppError(
@@ -900,6 +1389,74 @@ function resolveCatalogStatus(
   return "restorable" as const;
 }
 
+function directEntryToRecord(entry: DirectRemoteSessionEntry): SessionRecord {
+  const now = new Date().toISOString();
+
+  return {
+    id: entry.recordId,
+    threadId: entry.threadId,
+    hostId: entry.hostId,
+    hostLabel: entry.hostLabel,
+    isRemote: true,
+    filePath: entry.activePath,
+    activePath: entry.activePath,
+    archivePath: null,
+    snapshotPath: null,
+    originalRelativePath: entry.originalRelativePath,
+    cwd: entry.summary.cwd,
+    startedAt: entry.summary.startedAt,
+    originator: entry.summary.originator,
+    source: entry.summary.source,
+    cliVersion: entry.summary.cliVersion,
+    modelProvider: entry.summary.modelProvider,
+    sizeBytes: entry.summary.sizeBytes,
+    lineCount: entry.summary.lineCount,
+    eventCount: entry.summary.eventCount,
+    toolCallCount: entry.summary.toolCallCount,
+    userPromptExcerpt: entry.summary.userPromptExcerpt,
+    latestAgentMessageExcerpt: entry.summary.latestAgentMessageExcerpt,
+    status: entry.status,
+    createdAt: now,
+    updatedAt: now,
+    indexedAt: now,
+  };
+}
+
+function sessionMatchesFilters(record: SessionRecord, filters: SessionFilters) {
+  if (filters.status) {
+    const statusMatches =
+      filters.status === "archived"
+        ? record.status === "archived" || record.status === "restorable"
+        : record.status === filters.status;
+
+    if (!statusMatches) {
+      return false;
+    }
+  }
+
+  if (filters.cwd && record.cwd !== filters.cwd) {
+    return false;
+  }
+
+  if (filters.hostId && record.hostId !== filters.hostId) {
+    return false;
+  }
+
+  if (filters.query) {
+    const normalizedQuery = filters.query.toLowerCase();
+    return [
+      record.id,
+      record.threadId,
+      record.hostLabel,
+      record.cwd,
+      record.userPromptExcerpt,
+      record.latestAgentMessageExcerpt,
+    ].some((value) => value.toLowerCase().includes(normalizedQuery));
+  }
+
+  return true;
+}
+
 function normalizeSessionIds(sessionIds?: string[]) {
   if (!sessionIds || sessionIds.length === 0) {
     return undefined;
@@ -925,7 +1482,7 @@ function createEmptyRepairStats() {
 
 function readRelativePathFromAudit(
   candidate: string | null | undefined,
-  roots: ReturnType<typeof buildSessionRoots>,
+  roots: ManagedSessionRoots,
 ) {
   if (!candidate) {
     return null;

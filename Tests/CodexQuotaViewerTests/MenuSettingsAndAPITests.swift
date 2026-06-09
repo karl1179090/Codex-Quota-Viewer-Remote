@@ -565,6 +565,30 @@ func quotaOverviewMenuRowsUseCustomViewAndShowDualQuotaColumns() throws {
 
 @MainActor
 @Test
+func accountMenuRowReservesSpaceForWeeklyResetDate() throws {
+    let rowView = AccountMenuRowView(
+        model: AccountMenuRowModel(
+            name: "GoPay5.31",
+            primaryRemainingText: "5h 99%",
+            secondaryRemainingText: "7d 28%",
+            primaryResetText: "5h 16:10",
+            secondaryResetText: "7d 12月 31日",
+            indicatorColor: .systemGreen,
+            isCurrent: true,
+            isEnabled: false,
+            accessibilityLabel: "GoPay5.31, 7d 12月 31日"
+        )
+    )
+    rowView.frame = NSRect(origin: .zero, size: rowView.intrinsicContentSize)
+    rowView.layoutSubtreeIfNeeded()
+
+    let weeklyResetLabel = try #require(findLabel(in: rowView) { $0 == "12月 31日" })
+    #expect(weeklyResetLabel.frame.width >= ceil(weeklyResetLabel.intrinsicContentSize.width))
+    #expect(findLabel(in: rowView) { $0 == "GoPay5.31" } != nil)
+}
+
+@MainActor
+@Test
 func maintenanceMenuRefreshItemShowsProgressCountsWhenAvailable() {
     withExclusiveAppLocalization {
         AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])

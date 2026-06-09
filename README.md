@@ -2,7 +2,10 @@ English | [中文](README.zh-CN.md)
 
 # Codex Quota Viewer
 
-> Stable release: `1.3.5`
+> Stable release: `1.3.6`
+>
+> 1.3.6 hotfix:
+> - Fixes clipped `7d` reset dates in the compact account rows, especially localized month-day dates such as Chinese `12月 31日`.
 >
 > 1.3.4 hotfix:
 > - Restarts remote Codex app-server processes after remote account sync so they reload the switched account.

@@ -23,8 +23,8 @@ final class AccountMenuRowView: NSView {
     private let cardView = NSView()
     private let indicatorView = AccountStatusDotView()
     private let nameField = NSTextField(labelWithString: "")
-    private let primaryQuotaView = AccountQuotaMetricView(accentColor: .systemIndigo)
-    private let secondaryQuotaView = AccountQuotaMetricView(accentColor: .systemGreen)
+    private let primaryQuotaView = AccountQuotaMetricView(accentColor: .systemIndigo, resetWidth: 34)
+    private let secondaryQuotaView = AccountQuotaMetricView(accentColor: .systemGreen, resetWidth: 50)
 
     private var trackingAreaRef: NSTrackingArea?
     private var isHovered = false {
@@ -141,6 +141,7 @@ final class AccountMenuRowView: NSView {
         nameField.lineBreakMode = .byTruncatingTail
         nameField.maximumNumberOfLines = 1
         nameField.textColor = .labelColor
+        nameField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         addSubview(nameField)
 
         [primaryQuotaView, secondaryQuotaView].forEach {
@@ -265,20 +266,21 @@ private final class AccountQuotaMetricView: NSView {
     private static let pillWidth: CGFloat = 26
     private static let trackWidth: CGFloat = 28
     private static let percentWidth: CGFloat = 30
-    private static let resetWidth: CGFloat = 34
     private static let height: CGFloat = 24
 
     private let accentColor: NSColor
+    private let resetWidth: CGFloat
     private let pillView: AccountQuotaPillView
     private let progressView: AccountQuotaProgressView
     private let percentField = NSTextField(labelWithString: "")
     private let resetField = NSTextField(labelWithString: "")
 
-    init(accentColor: NSColor) {
+    init(accentColor: NSColor, resetWidth: CGFloat) {
         self.accentColor = accentColor
+        self.resetWidth = resetWidth
         pillView = AccountQuotaPillView(accentColor: accentColor)
         progressView = AccountQuotaProgressView(fillColor: accentColor)
-        super.init(frame: NSRect(x: 0, y: 0, width: Self.intrinsicWidth, height: Self.height))
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.intrinsicWidth(resetWidth: resetWidth), height: Self.height))
         setupView()
     }
 
@@ -288,7 +290,7 @@ private final class AccountQuotaMetricView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: Self.intrinsicWidth, height: Self.height)
+        NSSize(width: intrinsicWidth, height: Self.height)
     }
 
     func apply(_ model: AccountQuotaMetricModel) {
@@ -325,7 +327,7 @@ private final class AccountQuotaMetricView: NSView {
         addSubview(resetField)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: Self.intrinsicWidth),
+            widthAnchor.constraint(equalToConstant: intrinsicWidth),
             heightAnchor.constraint(equalToConstant: Self.height),
 
             pillView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -344,11 +346,15 @@ private final class AccountQuotaMetricView: NSView {
 
             resetField.leadingAnchor.constraint(equalTo: percentField.trailingAnchor, constant: 3),
             resetField.centerYAnchor.constraint(equalTo: centerYAnchor),
-            resetField.widthAnchor.constraint(equalToConstant: Self.resetWidth),
+            resetField.widthAnchor.constraint(equalToConstant: resetWidth),
         ])
     }
 
-    private static var intrinsicWidth: CGFloat {
+    private var intrinsicWidth: CGFloat {
+        Self.intrinsicWidth(resetWidth: resetWidth)
+    }
+
+    private static func intrinsicWidth(resetWidth: CGFloat) -> CGFloat {
         pillWidth + 4 + trackWidth + 4 + percentWidth + 3 + resetWidth
     }
 }

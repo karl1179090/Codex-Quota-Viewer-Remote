@@ -92,19 +92,28 @@
 
 .remote-import-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(90px, 0.8fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
-  align-items: center;
+  align-items: stretch;
+}
+
+.remote-import-form .sidebar-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 
 .remote-import-form__actions {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
 }
 
 .remote-import-form__button {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
@@ -420,8 +429,12 @@
     min-height: 40px;
   }
 
-  .remote-import-form {
-    grid-template-columns: 1fr;
+  .remote-import-form__actions {
+    justify-content: stretch;
+  }
+
+  .remote-import-form__button {
+    flex: 1 1 120px;
   }
 
   .project-group__header {

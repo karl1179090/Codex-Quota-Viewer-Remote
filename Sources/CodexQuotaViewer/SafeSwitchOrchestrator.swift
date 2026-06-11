@@ -190,17 +190,20 @@ final class SwitchOrchestrator {
             let targetConfig = try effectiveTargetConfigData(for: targetProfile)
             let mergedConfig = try mergeRuntimeConfig(
                 currentConfigData: try store.currentConfigData(),
-                targetConfigData: targetConfig
+                targetConfigData: targetConfig,
+                removingSectionNames: targetProfile.authMode == .chatgpt ? ["model_providers.custom"] : []
             )
             let remoteResult: RemoteSwitchResult?
             if remoteSettings.shouldSyncRemote {
+                let stripCustomProviderSection = targetProfile.authMode == .chatgpt
                 let operation = RemoteSwitchOperation(
                     settings: remoteSettings,
                     restorePointID: restorePoint?.id,
                     authData: targetProfile.runtimeMaterial.authData,
                     targetConfigData: targetConfig,
                     targetProviderID: latestPreview.targetProviderID,
-                    terminateRemoteCodexProcesses: terminateRemoteCodexProcesses
+                    terminateRemoteCodexProcesses: terminateRemoteCodexProcesses,
+                    stripCustomProviderSection: stripCustomProviderSection
                 )
                 remoteResult = try await performRemoteSwitch(
                     operation,

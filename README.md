@@ -2,7 +2,14 @@ English | [中文](README.zh-CN.md)
 
 # Codex Quota Viewer
 
-> Stable release: `1.3.6`
+> Stable release: `1.3.7`
+>
+> 1.3.7 update:
+> - Removes stale `[model_providers.custom]` config when switching back from third-party Provider mode to a normal ChatGPT account, locally and on selected remote SSH hosts.
+> - Makes the remote Codex process termination option enabled by default in the switch confirmation dialog.
+> - Fixes remote session import SSH quoting for multiline scripts and `~/.codex` paths.
+> - Deduplicates direct remote session previews after importing the same host, and keeps session `updatedAt` stable when only provider metadata or file size changes.
+> - Improves the remote import form layout in the bundled Session Manager on narrow screens.
 >
 > 1.3.6 hotfix:
 > - Fixes clipped `7d` reset dates in the compact account rows, especially localized month-day dates such as Chinese `12月 31日`.
@@ -57,11 +64,11 @@ CodexMM checkout or a manual Node setup.
 - Add OpenAI-compatible API accounts with API key, base URL, and automatic
   model detection when available.
 - Switch between accounts safely with backup, rollback, and local thread repair.
-- Optionally sync the same account switch to remote machines through SSH.
+- Optionally sync the same account switch to remote machines through SSH, including cleanup of stale provider config when returning to a normal ChatGPT account.
 - Open a built-in local Session Manager from the menu bar and manage sessions in
   the browser.
-- Browse active, archived, and trashed sessions, search them, restore them, and
-  batch-operate on them.
+- Browse active, archived, trashed, and imported remote sessions; search them,
+  restore them, and batch-operate on them.
 - Keep the whole app and the Session Manager in sync with one language setting:
   `Follow System`, `English`, or `中文`.
 - Choose menu bar display style, refresh cadence, and launch-at-login behavior
@@ -143,8 +150,11 @@ If **Remote sync** is enabled in Settings, the same switch also runs on the
 selected remote SSH targets. Remote sync writes the target `auth.json`, merges
 the target `config.toml` with the remote machine's existing config, updates
 remote rollout `model_provider` metadata, and reports remote warnings and
-updated rollout counts. The switch confirmation can also terminate all `codex`
-processes owned by the SSH login user on each selected remote host.
+updated rollout counts. When switching from third-party Provider mode back to a
+normal ChatGPT account, it also removes the stale `[model_providers.custom]`
+section locally and remotely. The switch confirmation can also terminate all
+`codex` processes owned by the SSH login user on each selected remote host, and
+that cleanup option is enabled by default for remote switches.
 
 If something looks wrong, you can use **Maintenance -> Rollback Last Change** to
 restore the most recent switch backup.
@@ -192,6 +202,8 @@ You can use it to:
 - read the full session timeline
 - restore a session to a Codex-visible place
 - choose `Resume only` or `Rebind cwd` when restoring
+- preview and import sessions from SSH hosts without duplicating the same remote
+  thread after import
 - archive, trash, restore, and purge sessions
 - batch-select multiple sessions and operate on them together
 - repair official local thread metadata when the local state drifts

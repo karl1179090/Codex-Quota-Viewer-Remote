@@ -593,6 +593,7 @@ func switchOrchestratorSynchronizesRemoteWhenEnabled() async throws {
         #expect(remote.performOperations.count == 1)
         #expect(remote.performOperations[0].settings == settings)
         #expect(remote.performOperations[0].targetProviderID == "openai")
+        #expect(remote.performOperations[0].stripCustomProviderSection)
         #expect(remote.performOperations[0].terminateRemoteCodexProcesses)
         #expect(remote.performOperations[0].authData == target.runtimeMaterial.authData)
         let expectedRemoteTargetConfig = try #require(target.runtimeMaterial.configData)
@@ -603,6 +604,66 @@ func switchOrchestratorSynchronizesRemoteWhenEnabled() async throws {
         )
         #expect(remote.rollbackCalls.isEmpty)
         #expect(result.remoteResult?.sshTarget == "codex-box")
+    }
+
+@MainActor
+@Test
+func switchOrchestratorRemovesCustomProviderSectionWhenReturningToOfficialAccount() async throws {
+        let harness = try makeHarness()
+        try FileManager.default.createDirectory(at: harness.codexHomeURL, withIntermediateDirectories: true)
+        try Data(#"{"auth_mode":"chatgpt","last_refresh":"2026-03-31T00:00:00Z"}"#.utf8)
+            .write(to: harness.codexHomeURL.appendingPathComponent("auth.json"), options: .atomic)
+        try Data(
+            """
+            personality = "pragmatic"
+            model_reasoning_effort = "xhigh"
+            model_provider = "custom"
+            model = "gpt-5.4"
+
+            [model_providers.custom]
+            name = "custom"
+            wire_api = "responses"
+            requires_openai_auth = true
+            base_url = "https://codex.5552220.xyz/v1"
+
+            [mcp_servers.remote]
+            command = "remote-only"
+            """.utf8
+        )
+        .write(to: harness.codexHomeURL.appendingPathComponent("config.toml"), options: .atomic)
+
+        let remote = RemoteSwitchSpy()
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: RepairerSpy(),
+            desktop: DesktopControllerSpy(isRunning: false),
+            remoteSwitchClient: remote
+        )
+        let target = makeSwitchTarget()
+        let settings = RemoteSwitchSettings(
+            enabled: true,
+            sshTarget: "codex-box",
+            codexHomePath: "~/.codex"
+        )
+
+        let result = try await orchestrator.perform(
+            targetProfile: target,
+            remoteSettings: settings
+        )
+
+        let mergedConfig = try Data(
+            contentsOf: harness.codexHomeURL.appendingPathComponent("config.toml")
+        ).utf8String()
+
+        #expect(result.remoteResult?.sshTarget == "codex-box")
+        #expect(remote.performOperations.count == 1)
+        #expect(remote.performOperations[0].stripCustomProviderSection)
+        #expect(mergedConfig.contains("personality = \"pragmatic\""))
+        #expect(mergedConfig.contains("model_reasoning_effort = \"xhigh\""))
+        #expect(mergedConfig.contains("model_provider = \"openai\""))
+        #expect(mergedConfig.contains("model = \"gpt-5.4\""))
+        #expect(mergedConfig.contains("[model_providers.custom]") == false)
+        #expect(mergedConfig.contains("[mcp_servers.remote]"))
     }
 
 @MainActor

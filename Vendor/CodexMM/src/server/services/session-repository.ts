@@ -99,7 +99,7 @@ export class SessionRepository {
         const existing = existingById.get(entry.summary.id);
         const createdAt = existing?.created_at ?? indexedAt;
         const updatedAt =
-          existing && !didCatalogEntryChange(existing, entry)
+          existing && !didCatalogEntryAffectUpdatedAt(existing, entry)
             ? existing.updated_at
             : indexedAt;
 
@@ -207,7 +207,7 @@ export class SessionRepository {
     const persistCatalogEntry = this.db.transaction((catalogEntry: CatalogSessionEntry) => {
       const createdAt = existing?.created_at ?? now;
       const updatedAt =
-        existing && !didCatalogEntryChange(existing, catalogEntry)
+        existing && !didCatalogEntryAffectUpdatedAt(existing, catalogEntry)
           ? existing.updated_at
           : now;
 
@@ -740,7 +740,7 @@ function buildSessionFilterClause(filters: SessionFilters) {
   };
 }
 
-function didCatalogEntryChange(
+function didCatalogEntryAffectUpdatedAt(
   existing: SessionRow,
   entry: CatalogSessionEntry,
 ) {
@@ -760,8 +760,6 @@ function didCatalogEntryChange(
     existing.originator !== summary.originator ||
     existing.source !== summary.source ||
     existing.cliVersion !== summary.cliVersion ||
-    existing.modelProvider !== summary.modelProvider ||
-    existing.sizeBytes !== summary.sizeBytes ||
     existing.lineCount !== summary.lineCount ||
     existing.eventCount !== summary.eventCount ||
     existing.toolCallCount !== summary.toolCallCount ||

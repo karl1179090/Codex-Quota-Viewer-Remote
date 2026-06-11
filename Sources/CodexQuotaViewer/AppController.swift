@@ -811,16 +811,7 @@ final class AppController: NSObject, NSMenuDelegate {
             ].compactMap { $0 }.joined(separator: "\n")
             let terminateRemoteCodexCheckbox: NSButton?
             if preview.remote != nil {
-                let checkbox = NSButton(
-                    checkboxWithTitle: AppLocalization.localized(
-                        en: "Terminate all remote Codex processes for the SSH login user",
-                        zh: "终止远端 SSH 登录用户下的全部 Codex 进程"
-                    ),
-                    target: nil,
-                    action: nil
-                )
-                checkbox.state = .off
-                checkbox.setAccessibilityLabel(checkbox.title)
+                let checkbox = makeTerminateRemoteCodexProcessesCheckbox()
                 alert.accessoryView = checkbox
                 terminateRemoteCodexCheckbox = checkbox
             } else {
@@ -2421,4 +2412,19 @@ final class AppController: NSObject, NSMenuDelegate {
     func stopSessionManagerIfNeeded() {
         sessionManagerCoordinator.stopManagedProcess()
     }
+}
+
+@MainActor
+func makeTerminateRemoteCodexProcessesCheckbox() -> NSButton {
+    let checkbox = NSButton(
+        checkboxWithTitle: AppLocalization.localized(
+            en: "Terminate all remote Codex processes for the SSH login user",
+            zh: "终止远端 SSH 登录用户下的全部 Codex 进程"
+        ),
+        target: nil,
+        action: nil
+    )
+    checkbox.state = .on
+    checkbox.setAccessibilityLabel(checkbox.title)
+    return checkbox
 }

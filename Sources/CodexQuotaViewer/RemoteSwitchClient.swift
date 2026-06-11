@@ -7,6 +7,7 @@ struct RemoteSwitchOperation: Equatable, Sendable {
     let targetConfigData: Data
     let targetProviderID: String
     let terminateRemoteCodexProcesses: Bool
+    let stripCustomProviderSection: Bool
 
     init(
         settings: RemoteSwitchSettings,
@@ -14,7 +15,8 @@ struct RemoteSwitchOperation: Equatable, Sendable {
         authData: Data,
         targetConfigData: Data,
         targetProviderID: String,
-        terminateRemoteCodexProcesses: Bool = false
+        terminateRemoteCodexProcesses: Bool = false,
+        stripCustomProviderSection: Bool = false
     ) {
         self.settings = settings
         self.restorePointID = restorePointID
@@ -22,6 +24,7 @@ struct RemoteSwitchOperation: Equatable, Sendable {
         self.targetConfigData = targetConfigData
         self.targetProviderID = targetProviderID
         self.terminateRemoteCodexProcesses = terminateRemoteCodexProcesses
+        self.stripCustomProviderSection = stripCustomProviderSection
     }
 
     func withSettings(_ settings: RemoteSwitchSettings) -> RemoteSwitchOperation {
@@ -31,7 +34,8 @@ struct RemoteSwitchOperation: Equatable, Sendable {
             authData: authData,
             targetConfigData: targetConfigData,
             targetProviderID: targetProviderID,
-            terminateRemoteCodexProcesses: terminateRemoteCodexProcesses
+            terminateRemoteCodexProcesses: terminateRemoteCodexProcesses,
+            stripCustomProviderSection: stripCustomProviderSection
         )
     }
 }
@@ -342,7 +346,8 @@ final class SSHRemoteSwitchClient: RemoteSwitching, Sendable {
             codexHomePath: operation.settings.effectiveCodexHomePath,
             restorePointID: operation.restorePointID,
             payload: payload,
-            terminateRemoteCodexProcesses: operation.terminateRemoteCodexProcesses
+            terminateRemoteCodexProcesses: operation.terminateRemoteCodexProcesses,
+            stripCustomProviderSection: operation.stripCustomProviderSection
         )
         let outcomes = await runPerform(targets: targets, script: script, codexHomePath: operation.settings.effectiveCodexHomePath)
         let targetOrder = Dictionary(uniqueKeysWithValues: targets.enumerated().map { ($0.element, $0.offset) })
@@ -691,12 +696,14 @@ private func remotePerformScript(
     codexHomePath: String,
     restorePointID: String?,
     payload: RemoteSwitchPayload,
-    terminateRemoteCodexProcesses: Bool
+    terminateRemoteCodexProcesses: Bool,
+    stripCustomProviderSection: Bool
 ) -> String {
     let quotedCodexHome = shellSingleQuote(codexHomePath)
     let quotedRestoreID = shellSingleQuote(restorePointID ?? "direct-no-backup")
     let backupEnabled = restorePointID == nil ? "0" : "1"
     let remoteKillEnabled = terminateRemoteCodexProcesses ? "1" : "0"
+    let removeCustomProviderSection = stripCustomProviderSection ? "1" : "0"
     let quotedAuth = shellSingleQuote(payload.authBase64)
     let quotedTargetConfig = shellSingleQuote(payload.targetConfigBase64)
     let quotedProvider = shellSingleQuote(payload.providerBase64)
@@ -707,6 +714,7 @@ private func remotePerformScript(
     RESTORE_ID=\(quotedRestoreID)
     BACKUP_ENABLED=\(backupEnabled)
     REMOTE_CODEX_KILL_ENABLED=\(remoteKillEnabled)
+    REMOVE_CUSTOM_PROVIDER_SECTION=\(removeCustomProviderSection)
     AUTH_B64=\(quotedAuth)
     TARGET_CONFIG_B64=\(quotedTargetConfig)
     PROVIDER_B64=\(quotedProvider)
@@ -753,7 +761,7 @@ private func remotePerformScript(
     fi
     WARNINGS=0
     UPDATED_ROLLOUTS=0
-    export CODEX_HOME BACKUP_ROOT FILES_DIR BACKUP_ENABLED AUTH_B64_FILE TARGET_CONFIG_B64_FILE PROVIDER_B64_FILE
+    export CODEX_HOME BACKUP_ROOT FILES_DIR BACKUP_ENABLED AUTH_B64_FILE TARGET_CONFIG_B64_FILE PROVIDER_B64_FILE REMOVE_CUSTOM_PROVIDER_SECTION
     SUMMARY_FILE="$TMP_DIR/summary.env"
     export SUMMARY_FILE
     python3 <<'PY'
@@ -764,6 +772,7 @@ private func remotePerformScript(
     backup_root = Path(os.environ["BACKUP_ROOT"])
     files_dir = Path(os.environ["FILES_DIR"])
     backup_enabled = os.environ.get("BACKUP_ENABLED") == "1"
+    remove_custom_provider_section = os.environ.get("REMOVE_CUSTOM_PROVIDER_SECTION") == "1"
     auth = base64.b64decode(Path(os.environ["AUTH_B64_FILE"]).read_text())
     target_config = base64.b64decode(Path(os.environ["TARGET_CONFIG_B64_FILE"]).read_text())
     provider = base64.b64decode(Path(os.environ["PROVIDER_B64_FILE"]).read_text()).decode("utf-8")
@@ -884,6 +893,7 @@ private func remotePerformScript(
         filtered_current_sections = [
             section for section in current_sections
             if section["name"] not in target_section_names
+            and (not remove_custom_provider_section or section["name"] != "model_providers.custom")
         ]
 
         output = []

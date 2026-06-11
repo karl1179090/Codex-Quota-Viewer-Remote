@@ -216,6 +216,7 @@ export function createSessionManager(config: ManagerConfig) {
         codexHomePath,
         lastImportedAt: new Date().toISOString(),
       });
+      clearDirectRemoteSessionsForHost(host.hostId);
 
       const sessions = await scanAndIndexSessions();
       return {
@@ -239,12 +240,7 @@ export function createSessionManager(config: ManagerConfig) {
         codexHomePath,
       });
 
-      for (const staleId of [...directRemoteSessions.keys()]) {
-        const staleEntry = directRemoteSessions.get(staleId);
-        if (staleEntry?.hostId === host.hostId) {
-          directRemoteSessions.delete(staleId);
-        }
-      }
+      clearDirectRemoteSessionsForHost(host.hostId);
 
       for (const entry of entries) {
         const threadId = entry.parsed.summary.id;
@@ -1164,15 +1160,28 @@ export function createSessionManager(config: ManagerConfig) {
     const directRecords = [...directRemoteSessions.values()]
       .map(directEntryToRecord)
       .filter((record) => sessionMatchesFilters(record, filters));
-    const existingIds = new Set(records.map((record) => record.id));
+    const directHostThreadKeys = new Set(directRecords.map(sessionHostThreadKey));
+    const persistedRecords = records.filter(
+      (record) => !directHostThreadKeys.has(sessionHostThreadKey(record)),
+    );
+    const existingIds = new Set(persistedRecords.map((record) => record.id));
 
     return [
-      ...records,
+      ...persistedRecords,
       ...directRecords.filter((record) => !existingIds.has(record.id)),
     ].sort((left, right) => {
       const timeDelta = Date.parse(right.startedAt) - Date.parse(left.startedAt);
       return timeDelta === 0 ? left.id.localeCompare(right.id) : timeDelta;
     });
+  }
+
+  function clearDirectRemoteSessionsForHost(hostId: string) {
+    for (const staleId of [...directRemoteSessions.keys()]) {
+      const staleEntry = directRemoteSessions.get(staleId);
+      if (staleEntry?.hostId === hostId) {
+        directRemoteSessions.delete(staleId);
+      }
+    }
   }
 
   return {
@@ -1455,6 +1464,10 @@ function sessionMatchesFilters(record: SessionRecord, filters: SessionFilters) {
   }
 
   return true;
+}
+
+function sessionHostThreadKey(record: Pick<SessionRecord, "hostId" | "threadId">) {
+  return `${record.hostId}\u0000${record.threadId}`;
 }
 
 function normalizeSessionIds(sessionIds?: string[]) {

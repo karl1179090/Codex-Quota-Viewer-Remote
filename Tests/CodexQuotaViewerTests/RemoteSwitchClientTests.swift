@@ -62,6 +62,7 @@ func sshRemoteSwitchClientBuildsSSHInvocationAndPayloadScript() async throws {
     #expect(script.contains("TARGET_CONFIG_B64='bW9kZWxfcHJvdmlkZXIgPSAib3BlbmFpIgo='"))
     #expect(script.contains("PROVIDER_B64='b3BlbmFp'"))
     #expect(script.contains("REMOTE_CODEX_KILL_ENABLED=0"))
+    #expect(script.contains("REMOVE_CUSTOM_PROVIDER_SECTION=0"))
     #expect(script.contains("merged_config = merge_runtime_config(current_config, target_config)"))
     #expect(script.contains("remote-switch-backups/$RESTORE_ID"))
     #expect(script.contains("updated_rollouts=${UPDATED_ROLLOUTS:-0}"))
@@ -109,6 +110,88 @@ func sshRemoteSwitchClientCanTerminateRemoteCodexProcessesWhenRequested() async 
     #expect(script.contains("parent_comm in {\"node\", \"nodejs\"}"))
     #expect(script.contains("kill $REMOTE_CODEX_PIDS"))
     #expect(script.contains("kill -KILL $REMOTE_CODEX_STILL_RUNNING"))
+}
+
+@Test
+func sshRemoteSwitchClientRemovesCustomProviderSectionWhenSwitchingBackToOfficial() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RemoteSwitchClientTests-\(UUID().uuidString)", isDirectory: true)
+    let codexHome = root.appendingPathComponent("codex", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: root)
+    }
+    try FileManager.default.createDirectory(
+        at: codexHome.appendingPathComponent("sessions", isDirectory: true),
+        withIntermediateDirectories: true
+    )
+    try Data(
+        """
+        remote_personality = "keep"
+        model = "old-model"
+        model_provider = "custom"
+
+        [model_providers.custom]
+        name = "custom"
+        wire_api = "responses"
+        requires_openai_auth = true
+        base_url = "https://codex.5552220.xyz/v1"
+
+        [mcp_servers.remote]
+        command = "remote-only"
+        """.utf8
+    )
+    .write(to: codexHome.appendingPathComponent("config.toml"), options: .atomic)
+    try Data(#"{"auth_mode":"chatgpt"}"#.utf8)
+        .write(to: codexHome.appendingPathComponent("auth.json"), options: .atomic)
+    let rolloutURL = codexHome
+        .appendingPathComponent("sessions", isDirectory: true)
+        .appendingPathComponent("rollout.jsonl", isDirectory: false)
+    try Data(
+        """
+        {"timestamp":"2026-06-02T00:00:00Z","type":"session_meta","payload":{"id":"r1","model_provider":"custom"}}
+        {"timestamp":"2026-06-02T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"hello"}}
+        """.utf8
+    )
+    .write(to: rolloutURL, options: .atomic)
+
+    let executor = LocalShellRemoteProcessExecutor()
+    let client = SSHRemoteSwitchClient(
+        executor: executor,
+        sshURL: URL(fileURLWithPath: "/mock/ssh")
+    )
+
+    let result = try await client.perform(
+        RemoteSwitchOperation(
+            settings: RemoteSwitchSettings(
+                enabled: true,
+                sshTarget: "remote",
+                codexHomePath: codexHome.path
+            ),
+            restorePointID: "restore-official",
+            authData: Data(#"{"auth_mode":"chatgpt"}"#.utf8),
+            targetConfigData: Data(
+                """
+                model_provider = "openai"
+                model = "gpt-5.4"
+                """.utf8
+            ),
+            targetProviderID: "openai",
+            stripCustomProviderSection: true
+        )
+    )
+
+    let config = try Data(contentsOf: codexHome.appendingPathComponent("config.toml")).utf8String()
+    let script = try executor.calls[0].standardInput.utf8String()
+    #expect(result.updatedRolloutCount == 1)
+    #expect(script.contains("REMOVE_CUSTOM_PROVIDER_SECTION=1"))
+    #expect(config.contains("remote_personality = \"keep\""))
+    #expect(config.contains("model_provider = \"openai\""))
+    #expect(config.contains("model = \"gpt-5.4\""))
+    #expect(config.contains("[model_providers.custom]") == false)
+    #expect(config.contains("[mcp_servers.remote]"))
+    #expect(try Data(contentsOf: codexHome.appendingPathComponent("auth.json")).utf8String()
+        == #"{"auth_mode":"chatgpt"}"#)
+    #expect(try remoteTestSessionMetaProvider(from: rolloutURL) == "openai")
 }
 
 @Test

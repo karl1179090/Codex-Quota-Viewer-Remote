@@ -13,7 +13,8 @@ enum RuntimeConfigMergeError: LocalizedError {
 
 func mergeRuntimeConfig(
     currentConfigData: Data?,
-    targetConfigData: Data?
+    targetConfigData: Data?,
+    removingSectionNames: Set<String> = []
 ) throws -> Data {
     let current: LightweightTOMLDocument
     let target: LightweightTOMLDocument
@@ -35,7 +36,7 @@ func mergeRuntimeConfig(
     }
 
     let filteredCurrentSections = current.sections.filter { section in
-        !targetSectionNames.contains(section.name)
+        !targetSectionNames.contains(section.name) && !removingSectionNames.contains(section.name)
     }
 
     var outputLines: [String] = []

@@ -376,6 +376,60 @@ describe("SessionManager", () => {
     });
   });
 
+  test("deduplicates direct previews when the same host is imported", async () => {
+    const remoteCodexHome = path.join(harness.managerHome, "remote-preview-import");
+    await seedSession(remoteCodexHome, {
+      id: "preview-import-same-host",
+      cwd: "/srv/preview-import",
+      startedAt: "2026-03-30T10:16:37.087Z",
+      firstUserMessage: "先直接查看再拉取",
+      latestAgentMessage: "列表里不应该出现两份。",
+      registerOfficialThread: false,
+      registerSessionIndex: false,
+    });
+
+    manager = createSessionManager({
+      codexHome: harness.codexHome,
+      managerHome: harness.managerHome,
+      remoteSessionPreviewer: () => collectRemotePreviewEntries(remoteCodexHome),
+      remoteSessionPuller: async ({ destinationRoot }) => {
+        await cp(path.join(remoteCodexHome, "sessions"), destinationRoot, {
+          recursive: true,
+          force: true,
+        });
+
+        return {
+          copiedFileCount: 1,
+          copiedSessionCount: 1,
+        };
+      },
+    });
+
+    const preview = await manager.previewRemoteSessions({
+      sshTarget: "codex-box",
+      codexHomePath: "~/.codex",
+    });
+
+    expect(
+      preview.sessions.filter((session) => session.threadId === "preview-import-same-host"),
+    ).toHaveLength(1);
+
+    const imported = await manager.importRemoteSessions({
+      sshTarget: "codex-box",
+      codexHomePath: "~/.codex",
+    });
+    const matchingSessions = imported.sessions.filter(
+      (session) => session.threadId === "preview-import-same-host",
+    );
+
+    expect(matchingSessions).toHaveLength(1);
+    expect(matchingSessions[0]).toMatchObject({
+      id: `remote:${imported.hostId}:preview-import-same-host`,
+      hostId: imported.hostId,
+      isRemote: true,
+    });
+  });
+
   test("rescans keep updatedAt stable, refresh indexedAt, and do not repair official stores", async () => {
     await seedSession(harness.codexHome, {
       id: "session-rescan-idempotent",
@@ -403,6 +457,41 @@ describe("SessionManager", () => {
     expect(secondPass.record.indexedAt).not.toBe(firstPass.record.indexedAt);
     expect(readOfficialThread(harness.codexHome, "session-rescan-idempotent")).toBeNull();
     await expect(readSessionIndexEntry(harness.codexHome, "session-rescan-idempotent")).resolves.toBeNull();
+  });
+
+  test("rescans preserve updatedAt when only model provider metadata changes", async () => {
+    const filePath = await seedSession(harness.codexHome, {
+      id: "session-provider-metadata-only",
+      cwd: "/work/provider-metadata-only",
+      startedAt: "2026-03-29T10:16:37.087Z",
+      firstUserMessage: "只修 provider 元数据",
+      latestAgentMessage: "更新时间不应该被刷新。",
+      registerOfficialThread: false,
+      registerSessionIndex: false,
+    });
+
+    await manager.rescan();
+    const firstPass = await manager.getSessionDetail("session-provider-metadata-only");
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await rewriteSessionMetaProvider(filePath, "third-party-provider");
+    await manager.rescan();
+    const secondPass = await manager.getSessionDetail("session-provider-metadata-only");
+
+    expect(firstPass.record.modelProvider).toBe("openai");
+    expect(secondPass.record.modelProvider).toBe("third-party-provider");
+    expect(secondPass.record.sizeBytes).not.toBe(firstPass.record.sizeBytes);
+    expect(secondPass.record.updatedAt).toBe(firstPass.record.updatedAt);
+    expect(secondPass.record.indexedAt).not.toBe(firstPass.record.indexedAt);
+
+    await manager.repairOfficialThreads();
+
+    expect(readOfficialThread(harness.codexHome, "session-provider-metadata-only")?.updatedAt).toBe(
+      Math.floor(Date.parse(firstPass.record.updatedAt) / 1000),
+    );
+    await expect(readSessionIndexEntry(harness.codexHome, "session-provider-metadata-only")).resolves.toMatchObject({
+      updated_at: firstPass.record.updatedAt,
+    });
   });
 
   test("migrates legacy indexes before creating host indexes", async () => {
@@ -1435,6 +1524,40 @@ async function rewriteFirstUserMessage(filePath: string, nextMessage: string) {
         }
 
         entry.payload.message = nextMessage;
+        updated = true;
+        return JSON.stringify(entry);
+      } catch {
+        return line;
+      }
+    })
+    .join("\n");
+
+  await writeFile(filePath, nextContent);
+}
+
+async function rewriteSessionMetaProvider(filePath: string, nextProvider: string) {
+  const content = await readFile(filePath, "utf8");
+  let updated = false;
+  const nextContent = content
+    .split("\n")
+    .map((line) => {
+      if (updated || !line.trim()) {
+        return line;
+      }
+
+      try {
+        const entry = JSON.parse(line) as {
+          type?: unknown;
+          payload?: {
+            model_provider?: unknown;
+          };
+        };
+
+        if (entry.type !== "session_meta" || !entry.payload) {
+          return line;
+        }
+
+        entry.payload.model_provider = nextProvider;
         updated = true;
         return JSON.stringify(entry);
       } catch {

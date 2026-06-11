@@ -202,14 +202,14 @@ async function extractRemoteSessionsArchive(options: {
   }
 }
 
-function buildRemoteArchiveCommand(codexHomePath: string) {
+export function buildRemoteArchiveCommand(codexHomePath: string) {
   const requestedHome = codexHomePath.trim() || "~/.codex";
 
   return `
 CODEX_HOME_INPUT=${shellQuote(requestedHome)}
 case "$CODEX_HOME_INPUT" in
   "~") CODEX_HOME="$HOME" ;;
-  "~/"*) CODEX_HOME="$HOME/\${CODEX_HOME_INPUT#~/}" ;;
+  "~/"*) CODEX_HOME="$HOME/\${CODEX_HOME_INPUT#\\~/}" ;;
   *) CODEX_HOME="$CODEX_HOME_INPUT" ;;
 esac
 SESSIONS_DIR="$CODEX_HOME/sessions"
@@ -254,7 +254,7 @@ function remoteCodexHomePrelude(codexHomePath: string) {
 CODEX_HOME_INPUT=${shellQuote(requestedHome)}
 case "$CODEX_HOME_INPUT" in
   "~") CODEX_HOME="$HOME" ;;
-  "~/"*) CODEX_HOME="$HOME/\${CODEX_HOME_INPUT#~/}" ;;
+  "~/"*) CODEX_HOME="$HOME/\${CODEX_HOME_INPUT#\\~/}" ;;
   *) CODEX_HOME="$CODEX_HOME_INPUT" ;;
 esac
 `.trim();
@@ -329,18 +329,22 @@ async function runSSHCommand(options: {
 function spawnSSH(sshTarget: string, remoteCommand: string, withInput = false) {
   return spawn(
     "/usr/bin/ssh",
-    [
-      "-o",
-      "BatchMode=yes",
-      "-o",
-      "ConnectTimeout=10",
-      sshTarget,
-      "sh",
-      "-c",
-      remoteCommand,
-    ],
+    buildSSHCommandArgs(sshTarget, remoteCommand),
     { stdio: [withInput ? "pipe" : "ignore", "pipe", "pipe"] },
   );
+}
+
+export function buildSSHCommandArgs(sshTarget: string, remoteCommand: string) {
+  return [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=10",
+    sshTarget,
+    "sh",
+    "-c",
+    shellQuote(remoteCommand),
+  ];
 }
 
 function waitForChild(child: ChildProcess) {

@@ -113,6 +113,48 @@ func sshRemoteSwitchClientCanTerminateRemoteCodexProcessesWhenRequested() async 
 }
 
 @Test
+func sshRemoteSwitchClientRemovesDesktopSSHWebSocketAfterRemoteCodexTermination() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RemoteSwitchClientTests-\(UUID().uuidString)", isDirectory: true)
+    let codexHome = root.appendingPathComponent("codex", isDirectory: true)
+    let appServerControl = codexHome.appendingPathComponent("app-server-control", isDirectory: true)
+    let desktopSSHSocket = appServerControl.appendingPathComponent("desktop-ssh-websocket-v0.sock")
+    defer {
+        try? FileManager.default.removeItem(at: root)
+    }
+    try FileManager.default.createDirectory(at: appServerControl, withIntermediateDirectories: true)
+    try Data("stale socket placeholder".utf8).write(to: desktopSSHSocket, options: .atomic)
+
+    let fakeBin = try makeFakeProcessListingBin(in: root)
+    let originalPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+    let executor = LocalShellRemoteProcessExecutor(
+        environmentOverrides: ["PATH": "\(fakeBin.path):\(originalPath)"]
+    )
+    let client = SSHRemoteSwitchClient(
+        executor: executor,
+        sshURL: URL(fileURLWithPath: "/mock/ssh")
+    )
+
+    let result = try await client.perform(
+        RemoteSwitchOperation(
+            settings: RemoteSwitchSettings(
+                enabled: true,
+                sshTarget: "remote",
+                codexHomePath: codexHome.path
+            ),
+            restorePointID: "restore-remove-desktop-ssh-socket",
+            authData: Data(#"{"auth_mode":"chatgpt"}"#.utf8),
+            targetConfigData: Data("model_provider = \"openai\"\n".utf8),
+            targetProviderID: "openai",
+            terminateRemoteCodexProcesses: true
+        )
+    )
+
+    #expect(result.warningCount == 0)
+    #expect(!FileManager.default.fileExists(atPath: desktopSSHSocket.path))
+}
+
+@Test
 func sshRemoteSwitchClientRemovesCustomProviderSectionWhenSwitchingBackToOfficial() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("RemoteSwitchClientTests-\(UUID().uuidString)", isDirectory: true)
@@ -315,6 +357,63 @@ func sshRemoteSwitchClientMergesTargetConfigWithRemoteCurrentConfig() async thro
     #expect(try Data(contentsOf: codexHome.appendingPathComponent("auth.json")).utf8String()
         == #"{"auth_mode":"chatgpt"}"#)
     #expect(try remoteTestSessionMetaProvider(from: rolloutURL) == "openai")
+}
+
+@Test
+func sshRemoteSwitchClientPreservesRemoteRolloutModificationTimeWhenOnlyProviderChanges() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RemoteSwitchClientTests-\(UUID().uuidString)", isDirectory: true)
+    let codexHome = root.appendingPathComponent("codex", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: root)
+    }
+    try FileManager.default.createDirectory(
+        at: codexHome.appendingPathComponent("sessions", isDirectory: true),
+        withIntermediateDirectories: true
+    )
+    try Data("model_provider = \"legacy\"\n".utf8)
+        .write(to: codexHome.appendingPathComponent("config.toml"), options: .atomic)
+    try Data(#"{"auth_mode":"old"}"#.utf8)
+        .write(to: codexHome.appendingPathComponent("auth.json"), options: .atomic)
+    let rolloutURL = codexHome
+        .appendingPathComponent("sessions", isDirectory: true)
+        .appendingPathComponent("rollout.jsonl", isDirectory: false)
+    try Data(
+        """
+        {"timestamp":"2026-06-02T00:00:00Z","type":"session_meta","payload":{"id":"r1","model_provider":"legacy"}}
+        {"timestamp":"2026-06-02T00:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"hello"}}
+        """.utf8
+    )
+    .write(to: rolloutURL, options: .atomic)
+    let originalModificationDate = Date(timeIntervalSince1970: 1_700_000_000)
+    try FileManager.default.setAttributes(
+        [.modificationDate: originalModificationDate],
+        ofItemAtPath: rolloutURL.path
+    )
+
+    let executor = LocalShellRemoteProcessExecutor()
+    let client = SSHRemoteSwitchClient(
+        executor: executor,
+        sshURL: URL(fileURLWithPath: "/mock/ssh")
+    )
+
+    let result = try await client.perform(
+        RemoteSwitchOperation(
+            settings: RemoteSwitchSettings(
+                enabled: true,
+                sshTarget: "remote",
+                codexHomePath: codexHome.path
+            ),
+            restorePointID: "restore-preserve-mtime",
+            authData: Data(#"{"auth_mode":"chatgpt"}"#.utf8),
+            targetConfigData: Data("model_provider = \"openai\"\n".utf8),
+            targetProviderID: "openai"
+        )
+    )
+
+    #expect(result.updatedRolloutCount == 1)
+    #expect(try remoteTestSessionMetaProvider(from: rolloutURL) == "openai")
+    #expect(try fileModificationDate(rolloutURL) == originalModificationDate)
 }
 
 @Test
@@ -558,6 +657,11 @@ private actor ConcurrentRemoteProcessExecutorSpy: ProcessExecuting {
 
 private final class LocalShellRemoteProcessExecutor: ProcessExecuting, @unchecked Sendable {
     private(set) var calls: [RemoteProcessExecutorSpy.Call] = []
+    private let environmentOverrides: [String: String]
+
+    init(environmentOverrides: [String: String] = [:]) {
+        self.environmentOverrides = environmentOverrides
+    }
 
     func run(
         executableURL: URL,
@@ -577,6 +681,7 @@ private final class LocalShellRemoteProcessExecutor: ProcessExecuting, @unchecke
         process.arguments = ["-s"]
         var environment = ProcessInfo.processInfo.environment
         environment["CODEX_QUOTA_VIEWER_SKIP_APP_SERVER_PKILL"] = "1"
+        environment.merge(environmentOverrides) { _, new in new }
         process.environment = environment
         let inputPipe = Pipe()
         let outputPipe = Pipe()
@@ -594,6 +699,15 @@ private final class LocalShellRemoteProcessExecutor: ProcessExecuting, @unchecke
             standardError: errorPipe.fileHandleForReading.readDataToEndOfFile()
         )
     }
+}
+
+private func makeFakeProcessListingBin(in root: URL) throws -> URL {
+    let bin = root.appendingPathComponent("fake-bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    let ps = bin.appendingPathComponent("ps", isDirectory: false)
+    try Data("#!/bin/sh\nexit 0\n".utf8).write(to: ps, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ps.path)
+    return bin
 }
 
 private func remoteTestSessionMetaProvider(from fileURL: URL) throws -> String {
@@ -616,6 +730,14 @@ private func remoteTestSessionMetaPayload(from fileURL: URL) throws -> [String: 
         throw NSError(domain: "RemoteSwitchClientTests", code: 2)
     }
     return payload
+}
+
+private func fileModificationDate(_ fileURL: URL) throws -> Date {
+    let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+    guard let date = attributes[.modificationDate] as? Date else {
+        throw NSError(domain: "RemoteSwitchClientTests", code: 3)
+    }
+    return date
 }
 
 @discardableResult

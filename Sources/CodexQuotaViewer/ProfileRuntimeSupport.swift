@@ -364,20 +364,20 @@ private func chatGPTAccountIdentity(from authData: Data) -> String? {
         return nil
     }
 
-    if let accountID = normalizedStableIdentityComponent(envelope.tokens?.accountID) {
-        return "account:\(accountID)"
-    }
-
     if let claims = jwtClaims(from: envelope.tokens?.idToken) ?? jwtClaims(from: envelope.tokens?.accessToken) {
-        if let accountID = normalizedStableIdentityComponent(claims.accountID) {
-            return "account:\(accountID)"
+        if let subject = normalizedStableIdentityComponent(claims.subject) {
+            return "sub:\(subject)"
         }
         if let email = normalizedEmailIdentityComponent(claims.email) {
             return "email:\(email)"
         }
-        if let subject = normalizedStableIdentityComponent(claims.subject) {
-            return "sub:\(subject)"
+        if let accountID = normalizedStableIdentityComponent(claims.accountID) {
+            return "account:\(accountID)"
         }
+    }
+
+    if let accountID = normalizedStableIdentityComponent(envelope.tokens?.accountID) {
+        return "account:\(accountID)"
     }
 
     return nil

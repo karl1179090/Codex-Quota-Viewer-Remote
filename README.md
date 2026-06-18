@@ -2,7 +2,14 @@ English | [中文](README.zh-CN.md)
 
 # Codex Quota Viewer
 
-> Stable release: `1.3.7`
+> Stable release: `1.3.8`
+>
+> 1.3.8 update:
+> - Runs the remote **Repair Remote Hosts** history metadata repair after a successful remote account switch, using the successfully synced SSH targets.
+> - Changes **Sync Current Local Config** so it sends only the current account's provider config for remote merge instead of uploading the whole local `config.toml`.
+> - Keeps remote-only config such as personality, MCP servers, and host-specific settings intact when syncing the current local account to remote hosts.
+> - Keeps separate ChatGPT accounts distinct when JWT subjects differ even if the token `account_id` is shared, and shows the source snapshot email when an account has a custom saved name.
+> - Cleans stale desktop SSH websocket sockets after remote Codex termination and preserves remote rollout file modification times when only provider metadata changes.
 >
 > 1.3.7 update:
 > - Removes stale `[model_providers.custom]` config when switching back from third-party Provider mode to a normal ChatGPT account, locally and on selected remote SSH hosts.
@@ -150,11 +157,14 @@ If **Remote sync** is enabled in Settings, the same switch also runs on the
 selected remote SSH targets. Remote sync writes the target `auth.json`, merges
 the target `config.toml` with the remote machine's existing config, updates
 remote rollout `model_provider` metadata, and reports remote warnings and
-updated rollout counts. When switching from third-party Provider mode back to a
-normal ChatGPT account, it also removes the stale `[model_providers.custom]`
-section locally and remotely. The switch confirmation can also terminate all
-`codex` processes owned by the SSH login user on each selected remote host, and
-that cleanup option is enabled by default for remote switches.
+updated rollout counts. After a successful remote account switch, it also runs
+the same remote history metadata repair exposed as **Repair Remote Hosts** in
+Advanced settings, so the remote Session Manager metadata follows the switched
+provider. When switching from third-party Provider mode back to a normal ChatGPT
+account, it also removes the stale `[model_providers.custom]` section locally
+and remotely. The switch confirmation can also terminate all `codex` processes
+owned by the SSH login user on each selected remote host, and that cleanup
+option is enabled by default for remote switches.
 
 If something looks wrong, you can use **Maintenance -> Rollback Last Change** to
 restore the most recent switch backup.
@@ -184,6 +194,9 @@ Open **Settings... -> Remote** to configure remote switch synchronization.
 - Search, select all, deselect all, and reload SSH host entries.
 - Add custom SSH targets that are not present in the SSH config.
 - Set the remote Codex home path, defaulting to `~/.codex`.
+- Use **Sync Current Local Config** to sync the current account auth and
+  provider config to selected hosts without replacing unrelated remote
+  `config.toml` settings.
 
 Remote sync uses the system `ssh` command and expects normal SSH access to the
 selected machines.

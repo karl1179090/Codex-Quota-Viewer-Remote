@@ -63,6 +63,29 @@ struct SettingsAccountPresentationInput: Equatable {
     let lastUsedAt: Date?
     let host: String?
     let model: String?
+    let snapshotEmail: String?
+
+    init(
+        id: String,
+        title: String,
+        authMode: CodexAuthMode,
+        state: SettingsAccountState,
+        isCurrent: Bool,
+        lastUsedAt: Date?,
+        host: String?,
+        model: String?,
+        snapshotEmail: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.authMode = authMode
+        self.state = state
+        self.isCurrent = isCurrent
+        self.lastUsedAt = lastUsedAt
+        self.host = host
+        self.model = model
+        self.snapshotEmail = snapshotEmail
+    }
 }
 
 struct SettingsAccountItem: Equatable {
@@ -386,6 +409,7 @@ private func makeSettingsAccountItem(
         subtitle = joinedNonEmptyParts([
             stateLabel,
             AppLocalization.localized(en: "ChatGPT", zh: "ChatGPT"),
+            distinctSnapshotEmail(from: input),
             AppLocalization.localized(en: "Local vault", zh: "本地账号仓"),
         ])
     }
@@ -399,6 +423,16 @@ private func makeSettingsAccountItem(
         canRename: true,
         canForget: !input.isCurrent
     )
+}
+
+private func distinctSnapshotEmail(from input: SettingsAccountPresentationInput) -> String? {
+    let email = input.snapshotEmail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !email.isEmpty else {
+        return nil
+    }
+
+    let title = input.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    return email.caseInsensitiveCompare(title) == .orderedSame ? nil : email
 }
 
 private func localizedSettingsAccountStateLabel(_ state: SettingsAccountState) -> String {

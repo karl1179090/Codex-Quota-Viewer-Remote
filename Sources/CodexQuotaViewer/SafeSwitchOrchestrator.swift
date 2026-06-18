@@ -213,6 +213,9 @@ final class SwitchOrchestrator {
                     for: remoteResult,
                     codexHomePath: remoteSettings.effectiveCodexHomePath
                 )
+                if let remoteRollbackSettings {
+                    _ = try await repairRemoteHistoryMetadata(remoteSettings: remoteRollbackSettings)
+                }
             } else {
                 remoteResult = nil
             }
@@ -369,7 +372,7 @@ final class SwitchOrchestrator {
         }
 
         let currentRuntime = try store.currentRuntimeMaterial()
-        let configData = try effectiveCurrentConfigData(
+        let configData = try accountScopedCurrentConfigData(
             authData: currentRuntime.authData,
             configData: currentRuntime.configData
         )
@@ -523,6 +526,73 @@ final class SwitchOrchestrator {
         throw SwitchOrchestratorError.missingRuntimeConfig(
             AppLocalization.localized(en: "Current local config", zh: "当前本机配置")
         )
+    }
+
+    private func accountScopedCurrentConfigData(
+        authData: Data,
+        configData: Data?
+    ) throws -> Data {
+        let effectiveConfig = try effectiveCurrentConfigData(
+            authData: authData,
+            configData: configData
+        )
+        let summary = parseRuntimeConfig(effectiveConfig)
+
+        if summary.usesOpenAICompatibilityProvider {
+            return synthesizedOpenAICompatibleConfig(from: summary)
+        }
+
+        if let providerID = summary.threadProviderID?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !providerID.isEmpty {
+            let document: LightweightTOMLDocument
+            do {
+                document = try LightweightTOMLDocument(data: effectiveConfig)
+            } catch LightweightTOMLDocumentError.invalidUTF8 {
+                throw RuntimeConfigMergeError.invalidUTF8
+            }
+
+            var lines = ["model_provider = \"\(escapedTOMLString(providerID))\""]
+            if let model = summary.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !model.isEmpty {
+                lines.append("model = \"\(escapedTOMLString(model))\"")
+            }
+            if let baseURL = document.rootAssignmentValue(forKey: "base_url")?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !baseURL.isEmpty {
+                lines.append("base_url = \"\(escapedTOMLString(baseURL))\"")
+            }
+
+            if let providerSection = document.section(named: "model_providers.\(providerID)") {
+                if !lines.isEmpty {
+                    lines.append("")
+                }
+                lines.append(providerSection.headerLine)
+                lines.append(contentsOf: trimTrailingBlankRuntimeConfigLines(providerSection.bodyLines))
+            }
+
+            return Data((trimBlankRuntimeConfigLines(lines).joined(separator: "\n") + "\n").utf8)
+        }
+
+        if resolveAuthMode(authData: authData) == .chatgpt {
+            return synthesizedStoredChatGPTConfig(from: summary)
+        }
+
+        throw SwitchOrchestratorError.missingProviderIdentifier(
+            AppLocalization.localized(en: "Current local config", zh: "当前本机配置")
+        )
+    }
+
+    private func trimBlankRuntimeConfigLines(_ lines: [String]) -> [String] {
+        trimTrailingBlankRuntimeConfigLines(trimLeadingBlankRuntimeConfigLines(lines))
+    }
+
+    private func trimLeadingBlankRuntimeConfigLines(_ lines: [String]) -> [String] {
+        Array(lines.drop { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+    }
+
+    private func trimTrailingBlankRuntimeConfigLines(_ lines: [String]) -> [String] {
+        Array(lines.reversed().drop { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.reversed())
     }
 
     private func resolveCurrentProviderID(

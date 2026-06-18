@@ -758,6 +758,7 @@ private func remotePerformScript(
           kill -KILL $REMOTE_CODEX_STILL_RUNNING 2>/dev/null || true
         fi
       fi
+      rm -f "$CODEX_HOME/app-server-control/desktop-ssh-websocket-v0.sock"
     fi
     WARNINGS=0
     UPDATED_ROLLOUTS=0
@@ -795,12 +796,19 @@ private func remotePerformScript(
             shutil.copy2(path, dest)
         manifest.append(record)
 
-    def atomic_write(path: Path, data: bytes):
+    def atomic_write(path: Path, data: bytes, preserve_metadata=False):
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-        os.replace(tmp_name, path)
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            if preserve_metadata and path.exists():
+                shutil.copystat(path, tmp_path, follow_symlinks=False)
+            os.replace(tmp_path, path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     def toml_assignment_key(line: str):
         trimmed = line.strip()
@@ -965,7 +973,7 @@ private func remotePerformScript(
             rest = path.read_bytes().splitlines(keepends=True)[1:]
             newline = b"\\n" if first_line.endswith(b"\\n") else b""
             next_first = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8") + newline
-            atomic_write(path, next_first + b"".join(rest))
+            atomic_write(path, next_first + b"".join(rest), preserve_metadata=True)
             updated_rollouts += 1
 
         atomic_write(auth_path, auth)

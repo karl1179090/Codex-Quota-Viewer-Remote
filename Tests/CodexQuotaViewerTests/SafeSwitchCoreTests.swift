@@ -608,6 +608,63 @@ func switchOrchestratorSynchronizesRemoteWhenEnabled() async throws {
 
 @MainActor
 @Test
+func switchOrchestratorRepairsRemoteHistoryAfterRemoteAccountSwitch() async throws {
+        let harness = try makeHarness()
+        try seedCurrentRuntime(in: harness, provider: "legacy")
+
+        let remote = RemoteSwitchSpy(
+            responses: [
+                .success(
+                    RemoteSwitchResult(
+                        targets: [
+                            RemoteSwitchTargetResult(
+                                sshTarget: "codex-box",
+                                codexHomePath: "/srv/codex",
+                                updatedRolloutCount: 1,
+                                warningCount: 0,
+                                terminatedCodexProcessCount: 0
+                            ),
+                            RemoteSwitchTargetResult(
+                                sshTarget: "prod-box",
+                                codexHomePath: "/srv/codex",
+                                updatedRolloutCount: 1,
+                                warningCount: 0,
+                                terminatedCodexProcessCount: 0
+                            ),
+                        ]
+                    )
+                ),
+            ]
+        )
+        let orchestrator = makeOrchestrator(
+            harness: harness,
+            repairer: RepairerSpy(),
+            desktop: DesktopControllerSpy(isRunning: false),
+            remoteSwitchClient: remote
+        )
+        let settings = RemoteSwitchSettings(
+            enabled: true,
+            sshTargets: ["codex-box", "prod-box"],
+            codexHomePath: "/srv/codex"
+        )
+
+        _ = try await orchestrator.perform(
+            targetProfile: makeSwitchTarget(),
+            remoteSettings: settings
+        )
+
+        #expect(remote.performOperations.count == 1)
+        #expect(remote.repairHistorySettings == [
+            RemoteSwitchSettings(
+                enabled: true,
+                sshTargets: ["codex-box", "prod-box"],
+                codexHomePath: "/srv/codex"
+            ),
+        ])
+    }
+
+@MainActor
+@Test
 func switchOrchestratorRemovesCustomProviderSectionWhenReturningToOfficialAccount() async throws {
         let harness = try makeHarness()
         try FileManager.default.createDirectory(at: harness.codexHomeURL, withIntermediateDirectories: true)
@@ -845,7 +902,7 @@ func switchOrchestratorSyncsCurrentRuntimeToRemoteHosts() async throws {
         #expect(try remote.performOperations[0].authData.utf8String()
             == "{\"auth_mode\":\"chatgpt\",\"last_refresh\":\"2026-03-31T00:00:00Z\"}")
         let config = try remote.performOperations[0].targetConfigData.utf8String()
-        #expect(config.contains("personality = \"pragmatic\""))
+        #expect(config.contains("personality = \"pragmatic\"") == false)
         #expect(config.contains("model_provider = \"legacy\""))
         #expect(config.contains("[model_providers.legacy]"))
     }
@@ -1329,6 +1386,7 @@ private final class RemoteSwitchSpy: RemoteSwitching, @unchecked Sendable {
 
     private(set) var performOperations: [RemoteSwitchOperation] = []
     private(set) var rollbackCalls: [RollbackCall] = []
+    private(set) var repairHistorySettings: [RemoteSwitchSettings] = []
     private let error: Error?
     private var responses: [Result<RemoteSwitchResult, Error>]
 
@@ -1366,6 +1424,7 @@ private final class RemoteSwitchSpy: RemoteSwitching, @unchecked Sendable {
     }
 
     func repairHistoryMetadata(settings: RemoteSwitchSettings) async throws -> RemoteHistoryRepairResult {
+        repairHistorySettings.append(settings)
         if let error {
             throw error
         }

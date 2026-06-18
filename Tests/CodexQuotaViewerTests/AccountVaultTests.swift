@@ -207,6 +207,41 @@ func vaultAccountStoreUsesStableChatGPTIdentityAcrossRefreshAndConfigDifferences
 }
 
 @Test
+func vaultAccountStoreKeepsDifferentJWTChatGPTUsersSeparateWhenTokenAccountIDMatches() throws {
+    let harness = try makeHarness()
+    let vault = makeVaultStore(harness)
+    let firstRuntime = chatGPTRuntimeWithJWTIdentity(
+        email: "ffantastill@gmail.com",
+        subject: "google-oauth2|114159387493995864342",
+        tokenAccountID: "shared-account-id"
+    )
+    let secondRuntime = chatGPTRuntimeWithJWTIdentity(
+        email: "6.66na2o2@gmail.com",
+        subject: "google-oauth2|106318048634631967554",
+        tokenAccountID: "shared-account-id"
+    )
+
+    #expect(stableAccountRecordID(for: firstRuntime) != stableAccountRecordID(for: secondRuntime))
+
+    let first = try vault.upsertAccount(
+        fallbackDisplayName: "ffantastill@gmail.com",
+        source: .manualChatGPT,
+        runtimeMaterial: firstRuntime
+    )
+    let second = try vault.upsertAccount(
+        fallbackDisplayName: "6.66na2o2@gmail.com",
+        source: .manualChatGPT,
+        runtimeMaterial: secondRuntime
+    )
+    let snapshot = try vault.loadSnapshot()
+
+    #expect(first.inserted)
+    #expect(second.inserted)
+    #expect(snapshot.accounts.count == 2)
+    #expect(Set(snapshot.accounts.map(\.metadata.displayName)) == ["ffantastill@gmail.com", "6.66na2o2@gmail.com"])
+}
+
+@Test
 func vaultAccountStorePreservesRenamedDisplayNameAcrossRuntimeRefresh() throws {
     let harness = try makeHarness()
     let vault = makeVaultStore(harness)
@@ -572,6 +607,41 @@ func vaultAccountRecordWriterHardensVaultAuthAndConfigPermissions() throws {
     #expect(directoryPermissions.intValue == 0o700)
     #expect(authPermissions.intValue == 0o600)
     #expect(configPermissions.intValue == 0o600)
+}
+
+private func chatGPTRuntimeWithJWTIdentity(
+    email: String,
+    subject: String,
+    tokenAccountID: String
+) -> ProfileRuntimeMaterial {
+    let token = unsignedJWT(payload: [
+        "email": email,
+        "sub": subject,
+    ])
+    return ProfileRuntimeMaterial(
+        authData: Data(
+            """
+            {"auth_mode":"chatgpt","tokens":{"access_token":"\(token)","id_token":"\(token)","account_id":"\(tokenAccountID)"}}
+            """.utf8
+        ),
+        configData: Data("model_provider = \"openai\"\n".utf8)
+    )
+}
+
+private func unsignedJWT(payload: [String: String]) -> String {
+    [
+        base64URLJSONString(["alg": "none"]),
+        base64URLJSONString(payload),
+        "signature",
+    ].joined(separator: ".")
+}
+
+private func base64URLJSONString(_ object: [String: String]) -> String {
+    let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    return data.base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
 }
 
 private struct ProbeStub: APIModelsProbing {

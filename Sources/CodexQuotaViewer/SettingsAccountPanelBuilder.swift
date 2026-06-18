@@ -28,7 +28,8 @@ func buildSettingsAccountPanelState(
             isCurrent: isCurrent,
             lastUsedAt: record.metadata.lastUsedAt,
             host: displayHost(from: record.metadata.baseURL),
-            model: record.metadata.model
+            model: record.metadata.model,
+            snapshotEmail: matchingProfile?.snapshot?.account.email
         )
     }
 

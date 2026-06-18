@@ -348,6 +348,39 @@ func settingsAccountPanelBuilderMarksCurrentAndAttentionStatesConsistently() {
 }
 
 @Test
+func settingsAccountPanelBuilderShowsSnapshotEmailWhenSavedNameIsCustom() {
+    withExclusiveAppLocalization {
+        AppLocalization.setPreferredLanguage(.en, preferredLanguages: ["en-US"])
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let currentProfile = makeTestProviderProfile(
+            id: "current",
+            displayName: "6.66na2o2",
+            authMode: .chatgpt,
+            snapshot: makeTestSnapshot(
+                email: "ffantastill@gmail.com",
+                primaryRemaining: 81,
+                secondaryRemaining: 79,
+                fetchedAt: now
+            ),
+            isCurrent: true,
+            lastUsedAt: now
+        )
+
+        let panelState = buildSettingsAccountPanelState(
+            vaultSnapshot: AccountVaultSnapshot(accounts: [makeTestVaultRecord(from: currentProfile)]),
+            vaultProfiles: [],
+            currentProviderProfile: currentProfile,
+            refreshIntervalPreset: RefreshIntervalPreset.fiveMinutes,
+            actionsEnabled: true
+        )
+        let item = panelState.sections[0].items[0]
+
+        #expect(item.title == "6.66na2o2")
+        #expect(item.subtitle.contains("ffantastill@gmail.com"))
+    }
+}
+
+@Test
 func apiAutoConfigNormalizesURLAndChoosesGeneralPurposeModel() {
     let fallback = try! buildFallbackAPIAccountDraft(
         apiKey: "sk-test",
